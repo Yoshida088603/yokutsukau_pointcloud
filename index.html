@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LAZ Center Picking - ブラウザ版（LAZ完全対応）</title>
+    <title>LAZ Center Picking - GitHub Pages版（LAZ完全対応）</title>
     <style>
         * {
             margin: 0;
@@ -228,48 +228,40 @@
             margin-top: 5px;
         }
 
-        .warning-box {
-            background: #fff3cd;
-            border: 1px solid #ffc107;
-            border-radius: 10px;
-            padding: 15px;
-            margin-bottom: 20px;
-        }
-
-        .warning-box h3 {
-            color: #856404;
-            margin-bottom: 10px;
-            font-size: 16px;
-        }
-
-        .warning-box p {
-            color: #856404;
-            font-size: 13px;
-            line-height: 1.6;
-        }
-
-        .warning-box code {
-            background: #f8f9fa;
-            padding: 2px 6px;
-            border-radius: 3px;
+        .github-badge {
+            display: inline-block;
+            padding: 5px 10px;
+            background: #24292e;
+            color: white;
+            border-radius: 5px;
             font-size: 12px;
+            margin-top: 10px;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🎯 LAZ Center Picking</h1>
-        <p class="subtitle">CSVに記載された座標周辺の点群を抽出するツール</p>
+        <p class="subtitle">CSVに記載された座標周辺の点群を抽出するツール（GitHub Pages版）</p>
         
         <div class="status" id="status">
-            ⏳ Pythonランタイムを初期化しています...
+            ⏳ LAZ解凍エンジンを初期化しています...
+        </div>
+
+        <div class="warning-box" style="margin-bottom: 20px; background: #e7f5ff; border: 1px solid #4a90e2; border-radius: 10px; padding: 15px;">
+            <h3>📊 ファイルサイズについて</h3>
+            <p>
+                <strong>✅ 1GB以上のファイルも処理可能です</strong><br>
+                ストリーミング処理により、大きなファイルでもメモリ効率的に処理できます。<br>
+                チャンクサイズを大きく設定すると、処理速度が向上します（推奨: 100-500MB）。
+            </p>
         </div>
 
         <div class="upload-section">
             <div class="file-input-wrapper">
                 <label for="lazFile" class="file-input-label" id="lazLabel">
                     <strong>📁 LAZ/LASファイルを選択</strong>
-                    <div class="file-info" id="lazInfo">✅ LAZ圧縮およびLAS非圧縮の両方に完全対応</div>
+                    <div class="file-info" id="lazInfo">✅ LAZ圧縮およびLAS非圧縮の両方に完全対応（ブラウザ内処理）</div>
                 </label>
                 <input type="file" id="lazFile" accept=".laz,.las">
             </div>
@@ -288,6 +280,15 @@
                 <label for="radius">抽出半径 (メートル)</label>
                 <input type="number" id="radius" value="0.5" min="0.1" step="0.1">
             </div>
+            <div class="setting-item">
+                <label for="chunkSize">チャンクサイズ (MB) - 大きいほど高速（推奨: 100-500MB）</label>
+                <input type="number" id="chunkSize" value="100" min="10" max="1000" step="50">
+                <small style="color: #666; font-size: 12px;">
+                    大きなファイル（1GB以上）の場合、チャンクサイズを大きく（500-1000MB）すると処理速度が向上します。<br>
+                    <strong>注意:</strong> LAZファイルの場合はチャンクサイズの影響は限定的です（ポイント単位で処理するため）。<br>
+                    非圧縮LASファイルの場合のみ、チャンクサイズが効果的です。処理後にパフォーマンス分析が表示されます。
+                </small>
+            </div>
         </div>
 
         <button class="process-btn" id="processBtn" disabled>処理を開始</button>
@@ -304,8 +305,12 @@
             <p id="resultText"></p>
             <a class="download-btn" id="downloadBtn" download="output.las">ダウンロード</a>
         </div>
+
+        <div class="github-badge">
+            🌐 GitHub Pages対応 - サーバー不要で完全動作
+        </div>
     </div>
 
-    <script src="app_server.js"></script>
+    <script type="module" src="app_github_pages.js"></script>
 </body>
 </html>
