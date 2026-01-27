@@ -41,7 +41,7 @@ python clip_spheres_stream.py --in_laz input.laz --centers_csv centers.csv --out
 - `--radius`: 抽出半径（メートル）（デフォルト: 0.5）
 - `--chunk_size`: チャンクサイズ（デフォルト: 500000）
 
-### 2. ブラウザ版（LAZ完全対応）
+### 2. ブラウザ版 - サーバー版（ローカル実行）
 
 **対応状況:**
 - ✅ **LAZ圧縮ファイル完全対応**
@@ -74,7 +74,46 @@ python server.py
 - 自動ダウンロード
 - 動作確認済み：1.75GB LAZ（176百万点）を4分で処理
 
-### 3. WebAssembly版（開発中）
+### 3. ブラウザ版 - GitHub Pages対応版（NEW! 🎉）
+
+**対応状況:**
+- ✅ **LAZ圧縮ファイル完全対応**（laz-perf WASM使用）
+- ✅ **非圧縮LAS対応**
+- ✅ **サーバー不要**（完全ブラウザ処理）
+- ✅ **GitHub Pagesで動作**（静的ホスティングのみ）
+
+**使用方法:**
+
+```bash
+# ローカルでテスト
+python -m http.server 8000
+# http://localhost:8000/index_github_pages.html
+```
+
+**GitHub Pagesで公開:**
+
+1. `index_github_pages.html`を`index.html`にリネーム（またはGitHub Pagesの設定で指定）
+2. `app_github_pages.js`をアップロード
+3. GitHub Pagesを有効化
+4. `https://<username>.github.io/csv_center_picking/`でアクセス
+
+**アーキテクチャ:**
+1. **ブラウザUI**: ファイル選択、進捗表示、ダウンロード
+2. **laz-perf WASM**: ブラウザ内でLAZ解凍（CDN経由）
+3. **完全クライアント処理**: サーバー不要、データは外部に送信されません
+
+**特徴:**
+- サーバー不要で完全動作
+- GitHub Pagesで公開可能
+- LAZ完全対応（laz-perf使用）
+- リアルタイム進捗表示
+- 自動ダウンロード
+
+**注意**: ブラウザのメモリ制限により、非常に大きなファイル（4GB以上）は処理できない場合があります。その場合はサーバー版をご利用ください。
+
+詳細: [GITHUB_PAGES.md](GITHUB_PAGES.md)
+
+### 4. WebAssembly版（開発中）
 
 **目標:**
 - ブラウザでLAZ解凍を実現
@@ -172,11 +211,12 @@ T2,-4922.123,-42415.456,8.720
 
 - [x] Python版実装
 - [x] 非圧縮LASブラウザ対応
-- [x] **LAZ完全対応（Pyodide版完成）**
-- [x] Pyodideベース統合完了
+- [x] **LAZ完全対応（サーバー版完成）**
+- [x] **GitHub Pages対応版完成（laz-perf使用）**
 - [x] プログレス表示実装
+- [ ] LASzip WASM版の完成（B案）
 - [ ] パフォーマンス最適化（将来）
-- [ ] WASM版の最適化（オプション）
+- [ ] Web Workerで並列処理
 
 ## 📚 技術詳細
 
