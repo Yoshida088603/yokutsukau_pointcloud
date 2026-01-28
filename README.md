@@ -6,9 +6,23 @@
 
 サーバー不要でブラウザ上で直接LAZ/LASファイルを処理できます。1GB以上のファイルも対応可能です。
 
+![LAZ Center Picking UI](assets/ui-screenshot.png)
+
 ---
 
-CSVに記載された座標周辺の点群（LAZ/LAS）を抽出するツール
+## 🎯 検証主題
+
+**サーバーレスで完結するLAS/LAZ処理 Webアプリケーション**
+
+このプロジェクトでは、以下の技術的課題の実現可能性を検証しています：
+
+- ✅ **LAZ圧縮ファイル対応**（laz-perf WASM使用）
+- ✅ **サーバーレス**（完全ブラウザ処理）
+- ✅ **静的ホスティングのみ**（GitHub Pagesで動作）
+
+**ユニークな点**: laz-perf WASMを統合し、静的ホスティング（GitHub Pages）で動作する完全サーバーレスなLAZ処理アプリケーションを実現しました。
+
+**実装例**: この技術を応用し、CSVに記載された座標周辺の点群（LAZ/LAS）を抽出するツールとして実装しています。
 
 ## 🎯 機能
 
@@ -20,69 +34,7 @@ CSVに記載された座標周辺の点群（LAZ/LAS）を抽出するツール
 
 ## 📦 実装バージョン
 
-### 1. Python版（推奨 - 完全動作）
-
-**特徴:**
-- ✅ LAZ/LAS完全対応
-- ✅ 176百万点を4分で処理
-- ✅ 実証済み：381,687点を正常に抽出
-- ✅ メモリ効率的なストリーミング処理
-
-**使用方法:**
-
-```bash
-# 仮想環境のセットアップ
-python -m venv venv
-.\venv\Scripts\activate
-
-# 依存パッケージのインストール
-pip install -r requirements.txt
-
-# 実行
-python clip_spheres_stream.py --in_laz input.laz --centers_csv centers.csv --out_laz output.laz --radius 0.5
-```
-
-**引数:**
-- `--in_laz`: 入力LAZ/LASファイル
-- `--centers_csv`: 中心座標CSVファイル（形式: `label,x,y,z`）
-- `--out_laz`: 出力LAZ/LASファイル
-- `--radius`: 抽出半径（メートル）（デフォルト: 0.5）
-- `--chunk_size`: チャンクサイズ（デフォルト: 500000）
-
-### 2. ブラウザ版 - サーバー版（ローカル実行）
-
-**対応状況:**
-- ✅ **LAZ圧縮ファイル完全対応**
-- ✅ **非圧縮LAS対応**
-- ✅ **ローカルPythonサーバーで高速処理**
-- ✅ **使いやすいWebUI**
-
-**使用方法:**
-
-```bash
-# 仮想環境をアクティベート
-.\venv\Scripts\activate
-
-# サーバーを起動
-python server.py
-
-# ブラウザで開く
-# http://localhost:8000/index.html
-```
-
-**アーキテクチャ:**
-1. **ブラウザUI**: ファイル選択、進捗表示、ダウンロード
-2. **Pythonサーバー**: LAZ解凍、点群フィルタリング（laspy + lazrs）
-3. **ローカル実行**: データは外部に送信されません
-
-**特徴:**
-- Python版と同じ処理エンジン（高速・確実）
-- ブラウザから簡単操作
-- リアルタイム進捗表示
-- 自動ダウンロード
-- 動作確認済み：1.75GB LAZ（176百万点）を4分で処理
-
-### 3. ブラウザ版 - GitHub Pages対応版（NEW! 🎉）
+### 1. ブラウザ版 - GitHub Pages対応版（メインの検証主題）
 
 **対応状況:**
 - ✅ **LAZ圧縮ファイル完全対応**（laz-perf WASM使用）
@@ -125,7 +77,40 @@ python -m http.server 8000
 
 詳細: [GITHUB_PAGES.md](GITHUB_PAGES.md)
 
-### 4. WebAssembly版（開発中）
+### 2. ブラウザ版 - サーバー版（ローカル実行）
+
+**対応状況:**
+- ✅ **LAZ圧縮ファイル完全対応**
+- ✅ **非圧縮LAS対応**
+- ✅ **ローカルPythonサーバーで高速処理**
+- ✅ **使いやすいWebUI**
+
+**使用方法:**
+
+```bash
+# 仮想環境をアクティベート
+.\venv\Scripts\activate
+
+# サーバーを起動
+python server.py
+
+# ブラウザで開く
+# http://localhost:8000/index.html
+```
+
+**アーキテクチャ:**
+1. **ブラウザUI**: ファイル選択、進捗表示、ダウンロード
+2. **Pythonサーバー**: LAZ解凍、点群フィルタリング（laspy + lazrs）
+3. **ローカル実行**: データは外部に送信されません
+
+**特徴:**
+- Python版と同じ処理エンジン（高速・確実）
+- ブラウザから簡単操作
+- リアルタイム進捗表示
+- 自動ダウンロード
+- 動作確認済み：1.75GB LAZ（176百万点）を4分で処理
+
+### 3. WebAssembly版（開発中）
 
 **目標:**
 - ブラウザでLAZ解凍を実現
@@ -175,6 +160,35 @@ build_full.bat
   }
 </script>
 ```
+
+### 4. Python版（参考実装）
+
+**特徴:**
+- ✅ LAZ/LAS完全対応
+- ✅ 176百万点を4分で処理
+- ✅ 実証済み：381,687点を正常に抽出
+- ✅ メモリ効率的なストリーミング処理
+
+**使用方法:**
+
+```bash
+# 仮想環境のセットアップ
+python -m venv venv
+.\venv\Scripts\activate
+
+# 依存パッケージのインストール
+pip install -r requirements.txt
+
+# 実行
+python clip_spheres_stream.py --in_laz input.laz --centers_csv centers.csv --out_laz output.laz --radius 0.5
+```
+
+**引数:**
+- `--in_laz`: 入力LAZ/LASファイル
+- `--centers_csv`: 中心座標CSVファイル（形式: `label,x,y,z`）
+- `--out_laz`: 出力LAZ/LASファイル
+- `--radius`: 抽出半径（メートル）（デフォルト: 0.5）
+- `--chunk_size`: チャンクサイズ（デフォルト: 500000）
 
 ## 📊 入力ファイル形式
 
@@ -230,6 +244,13 @@ T2,-4922.123,-42415.456,8.720
 - [ ] パフォーマンス最適化（将来）
 - [ ] Web Workerで並列処理
 
+## 🔬 今後の検証テーマ
+
+- [ ] **LAStools.jsとのパフォーマンス比較**
+  - laz-perfとLAStools.jsの処理速度を比較検証
+  - 同じファイルでベンチマークを実施
+  - メモリ使用量、処理時間、ブラウザ互換性を評価
+
 ## 📚 技術詳細
 
 ### LAZ圧縮について
@@ -242,9 +263,24 @@ LAZ（LASzip）は、LAS点群データの可逆圧縮形式です。
 3. **依存関係**: laz-perfやLASzipのWASMビルドが必要
 
 ### 解決策
-- **アプローチ1**: laz-perf WASM（軽量、高速）
+- **アプローチ1**: laz-perf WASM（軽量、高速）← **採用**
 - **アプローチ2**: LASzip WASM（完全機能）
 - **アプローチ3**: Pyodide（Python互換性）
+
+### laz-perfを選択した理由
+
+**laz-perf WASMを採用した理由**:
+- ✅ **ビルド不要**: npmパッケージとして利用可能、CDNから直接読み込み可能
+- ✅ **セットアップが簡単**: `import`で読み込むだけで使用可能
+- ✅ **静的ホスティングに適している**: GitHub Pagesで簡単にデプロイ可能
+- ✅ **実績**: Potreeで使用されている実績あり
+- ✅ **軽量**: ~1.2MB
+- ✅ **パフォーマンス**: LASzipよりも高速に実行される（開発目的）
+
+**LAStools.jsを採用しなかった理由**:
+- ⚠️ ビルドが必要（CMake + Emscripten）
+- ⚠️ npmパッケージやCDNでの配布が確認できなかった
+- ⚠️ セットアップが複雑（ビルド環境が必要）
 
 詳細: [WASM_INTEGRATION.md](WASM_INTEGRATION.md)
 
