@@ -48,10 +48,11 @@ python -m http.server 8000
 
 ### GitHub Pagesで公開する
 
-1. `index_github_pages.html` を `index.html` にリネーム（または設定で指定）
-2. `app_github_pages.js` をアップロード
-3. GitHub Pages を有効化
-4. `https://<username>.github.io/csv_center_picking/` でアクセス
+1. ルートに `index.html`（ブラウザ完結版）を配置済み。`app_github_pages.js` をアップロード
+2. GitHub Pages を有効化
+3. `https://<username>.github.io/csv_center_picking/` でアクセス
+
+**⚠️ 注意**: 必ずルート（`/` または `index.html`）を開いてください。`/variants/index.html` はサーバー版用のため、GitHub Pages では API がなく `Failed to fetch` になります。
 
 ### アーキテクチャ
 

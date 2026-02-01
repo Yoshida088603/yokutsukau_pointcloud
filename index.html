@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LAZ Center Picking</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .status {
+            padding: 15px;
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .status.success {
+            background: #d4edda;
+            border-color: #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            border-color: #f5c6cb;
+        }
+
+        .upload-section {
+            margin-bottom: 30px;
+        }
+
+        .file-input-wrapper {
+            margin-bottom: 20px;
+        }
+
+        .file-input-label {
+            display: block;
+            padding: 20px;
+            background: #f8f9fa;
+            border: 2px dashed #ddd;
+            border-radius: 10px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .file-input-label:hover {
+            background: #e9ecef;
+            border-color: #667eea;
+        }
+
+        .file-input-label.has-file {
+            background: #e7f5ff;
+            border-color: #667eea;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .settings {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .setting-item {
+            margin-bottom: 15px;
+        }
+
+        .setting-item:last-child {
+            margin-bottom: 0;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .process-btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .process-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+        }
+
+        .process-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .progress-section {
+            display: none;
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .progress-section.active {
+            display: block;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e9ecef;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .log {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #555;
+            max-height: 300px;
+            overflow-y: auto;
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+        }
+
+        .result-section {
+            display: none;
+            margin-top: 20px;
+            padding: 20px;
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            border-radius: 10px;
+        }
+
+        .result-section.active {
+            display: block;
+        }
+
+        .download-btn {
+            display: inline-block;
+            padding: 12px 24px;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            margin-top: 10px;
+            transition: background 0.3s;
+        }
+
+        .download-btn:hover {
+            background: #218838;
+        }
+
+        .file-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .github-badge {
+            display: inline-block;
+            padding: 5px 10px;
+            background: #24292e;
+            color: white;
+            border-radius: 5px;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 LAZ Center Picking</h1>
+        <p class="subtitle">CSVに記載された座標周辺の点群を抽出するツール（ブラウザ内オフライン処理）</p>
+        
+        <div class="status" id="status">
+            ⏳ LAZ解凍エンジンを初期化しています...
+        </div>
+
+        <div class="warning-box" style="margin-bottom: 20px; background: #e7f5ff; border: 1px solid #4a90e2; border-radius: 10px; padding: 15px;">
+            <h3>📊 ファイルサイズについて</h3>
+            <p>
+                <strong>✅ 1GB以上のファイルも処理可能です</strong><br>
+                ストリーミング処理により、大きなファイルでもメモリ効率的に処理できます。<br>
+                チャンクサイズを大きく設定すると、処理速度が向上します（推奨: 100-500MB）。
+            </p>
+        </div>
+
+        <div class="upload-section">
+            <div class="file-input-wrapper">
+                <label for="lazFile" class="file-input-label" id="lazLabel">
+                    <strong>📁 LAZ/LASファイルを選択</strong>
+                    <div class="file-info" id="lazInfo">✅ LAZ圧縮およびLAS非圧縮の両方に完全対応（ブラウザ内処理）</div>
+                </label>
+                <input type="file" id="lazFile" accept=".laz,.las">
+            </div>
+
+            <div class="file-input-wrapper">
+                <label for="csvFile" class="file-input-label" id="csvLabel">
+                    <strong>📊 CSVファイルを選択</strong>
+                    <div class="file-info" id="csvInfo">形式: label,x,y,z</div>
+                </label>
+                <input type="file" id="csvFile" accept=".csv">
+            </div>
+        </div>
+
+        <div class="settings">
+            <div class="setting-item">
+                <label for="radius">抽出半径 (メートル)</label>
+                <input type="number" id="radius" value="0.5" min="0.1" step="0.1">
+            </div>
+            <div class="setting-item">
+                <label for="chunkSize">チャンクサイズ (MB) - 大きいほど高速（推奨: 100-500MB）</label>
+                <input type="number" id="chunkSize" value="100" min="10" max="1000" step="50">
+                <small style="color: #666; font-size: 12px;">
+                    大きなファイル（1GB以上）の場合、チャンクサイズを大きく（500-1000MB）すると処理速度が向上します。<br>
+                    <strong>注意:</strong> LAZファイルの場合はチャンクサイズの影響は限定的です（ポイント単位で処理するため）。<br>
+                    非圧縮LASファイルの場合のみ、チャンクサイズが効果的です。処理後にパフォーマンス分析が表示されます。
+                </small>
+            </div>
+        </div>
+
+        <button class="process-btn" id="processBtn" disabled>処理を開始</button>
+
+        <div class="progress-section" id="progressSection">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill">0%</div>
+            </div>
+            <div class="log" id="log"></div>
+        </div>
+
+        <div class="result-section" id="resultSection">
+            <h3>✅ 処理完了</h3>
+            <p id="resultText"></p>
+            <a class="download-btn" id="downloadBtn" download="output.las">ダウンロード</a>
+        </div>
+
+        <div class="github-badge">
+            🌐 GitHub Pages - サーバー不要で完全動作
+        </div>
+    </div>
+
+    <script type="module" src="app_github_pages.js"></script>
+</body>
+</html>

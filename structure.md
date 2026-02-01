@@ -10,14 +10,15 @@
 
 ```
 ルート/
-├── index_github_pages.html   … エントリ（または index.html にリネームして公開）
+├── index.html                … GitHub Pages のエントリ（app_github_pages.js を読み込む）
+├── index_github_pages.html   … 同上の別名（同じ内容）
 ├── app_github_pages.js       … アプリ本体（LAZ/LAS ブラウザ処理）
 ├── assets/
 │   └── ui-screenshot.png     … README 等で参照する画像
 └── centers.csv               … 入力例（中心座標 CSV。任意）
 ```
 
-- **エントリ**: `index_github_pages.html`。公開時は `index.html` にリネームするか、ホスティング側でエントリを指定する。
+- **エントリ**: `index.html` がルートにあり、GitHub Pages のトップでブラウザ完結版が開く。`/variants/index.html` はサーバー版用のため静的ホスティングでは使わない。
 - **アプリ**: `app_github_pages.js` のみ。laz-perf は CDN から読み込むため、WASM をリポジトリに含めない。
 - **処理**: すべてクライアント側。データは外部に送信しない。
 
