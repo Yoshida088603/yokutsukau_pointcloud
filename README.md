@@ -66,7 +66,7 @@ python -m http.server 8000
 - LASはチャンクサイズを大きく（500–1000MB）すると処理が速くなりやすい
 - LAZはポイント単位処理のため、チャンクサイズの効果は限定的（非圧縮LASでのみ効果あり？）
 
-詳細は [GITHUB_PAGES.md](GITHUB_PAGES.md) を参照。
+詳細は [docs/GITHUB_PAGES.md](docs/GITHUB_PAGES.md) を参照。
 
 ---
 
@@ -107,7 +107,7 @@ LAZ（LASzip）はLAS点群の可逆圧縮形式で、おおよそ5–10倍の�
 
 **LAStools.jsを採用しなかった理由**: ビルド（CMake + Emscripten）が必要で、npm/CDNでの配布が確認できなかったため。
 
-詳細: [WASM_INTEGRATION.md](WASM_INTEGRATION.md)
+詳細: [docs/WASM_INTEGRATION.md](docs/WASM_INTEGRATION.md)
 
 ---
 

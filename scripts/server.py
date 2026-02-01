@@ -199,7 +199,7 @@ LAZ Center Picking Server
 サーバーを起動しました：http://localhost:{PORT}
 
 ブラウザで以下にアクセスしてください：
-  http://localhost:{PORT}/index.html
+  http://localhost:{PORT}/variants/index.html
 
 終了するには Ctrl+C を押してください
 ========================================

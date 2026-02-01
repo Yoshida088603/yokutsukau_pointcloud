@@ -19,9 +19,12 @@
 csv_center_picking/
 ├── index_github_pages.html    ← GitHub Pages用HTML
 ├── app_github_pages.js         ← laz-perf使用のJavaScript
-├── index.html                  ← サーバー版HTML
-├── app_server.js               ← サーバー版JavaScript
-└── server.py                   ← Pythonサーバー（ローカル用）
+├── variants/                   ← 別構成（サーバー版・Pyodide版など）
+│   ├── index.html
+│   ├── app_server.js
+│   └── …
+└── scripts/
+    └── server.py               ← Pythonサーバー（ローカル用）
 ```
 
 ## 🚀 使い方
@@ -140,7 +143,7 @@ build_full.bat  # LASzip WASMモジュールのビルド
 1. ブラウザを再起動
 2. 他のタブを閉じる
 3. より小さなファイルで試す
-4. サーバー版（`server.py`）を使用
+4. サーバー版（`scripts/server.py`）を使用
 
 ### 処理が遅い
 

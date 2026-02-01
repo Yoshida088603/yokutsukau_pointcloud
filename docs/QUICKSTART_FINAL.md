@@ -17,7 +17,7 @@
 .\venv\Scripts\activate
 
 # サーバーを起動
-python server.py
+python scripts/server.py
 ```
 
 起動メッセージが表示されます：
@@ -92,13 +92,16 @@ http://localhost:8000/index.html
 
 ```
 csv_center_picking/
-├── server.py              ← Pythonサーバー（LAZ処理API）
-├── index.html             ← ブラウザUI
-├── app_server.js          ← ブラウザ側JavaScript
-├── clip_spheres_stream.py ← コマンドライン版
-├── centers.csv            ← 入力CSV
-├── input.laz              ← 入力LAZ
-└── venv/                  ← Python仮想環境
+├── scripts/
+│   ├── server.py              ← Pythonサーバー（LAZ処理API）
+│   ├── clip_spheres_stream.py ← コマンドライン版
+│   └── requirements.txt
+├── variants/
+│   ├── index.html             ← ブラウザUI（サーバー版）
+│   └── app_server.js          ← ブラウザ側JavaScript
+├── centers.csv                ← 入力CSV
+├── input.laz                  ← 入力LAZ
+└── venv/                      ← Python仮想環境
 ```
 
 ## 🔧 トラブルシューティング
@@ -109,11 +112,11 @@ csv_center_picking/
 # 仮想環境を確認
 .\venv\Scripts\activate
 
-# 依存パッケージを再インストール
-pip install -r requirements.txt
+# 依存パッケージを再インストール（プロジェクトルートで）
+pip install -r scripts/requirements.txt
 
-# サーバーを起動
-python server.py
+# サーバーを起動（プロジェクトルートで）
+python scripts/server.py
 ```
 
 ### ブラウザでエラーが出る
@@ -126,7 +129,7 @@ python server.py
 
 - Python版（コマンドライン）を使用：
   ```bash
-  python clip_spheres_stream.py --in_laz input.laz --centers_csv centers.csv --out_laz output.laz --radius 0.5
+  python scripts/clip_spheres_stream.py --in_laz input.laz --centers_csv centers.csv --out_laz output.laz --radius 0.5
   ```
 
 ## 🌐 GitHub Pagesへのデプロイ
@@ -145,14 +148,14 @@ python server.py
 1. **複数ファイルの一括処理**
    ```bash
    for file in *.laz; do
-     python clip_spheres_stream.py --in_laz "$file" --centers_csv centers.csv --out_laz "output_$file" --radius 0.5
+     python scripts/clip_spheres_stream.py --in_laz "$file" --centers_csv centers.csv --out_laz "output_$file" --radius 0.5
    done
    ```
 
 2. **カスタマイズ**
-   - `server.py`: 処理ロジックの変更
-   - `app_server.js`: UI/UXの改善
-   - `index.html`: デザインのカスタマイズ
+   - `scripts/server.py`: 処理ロジックの変更
+   - `variants/app_server.js`: UI/UXの改善
+   - `variants/index.html`: デザインのカスタマイズ
 
 3. **パフォーマンス最適化**
    - チャンクサイズの調整
