@@ -22,6 +22,8 @@ const RGB_FORMATS = [2, 3, 5, 7, 8, 10];
 let lazFile = null;
 let csvFile = null;
 let centers = [];
+let csvLabels = [];
+let csvHasZ = false;
 let LazPerf = null;
 let wasmReady = false;
 
@@ -119,6 +121,7 @@ const chunkSizeInput = document.getElementById('chunkSize');
 const filterSphereInput = document.getElementById('filterSphere');
 const filterHorizontalInput = document.getElementById('filterHorizontal');
 const statusDiv = document.getElementById('status');
+const downloadCsvBtn = document.getElementById('downloadCsvBtn');
 
 // ============================================================================
 // イベントハンドラと初期化
@@ -172,6 +175,10 @@ function updateProgress(percent, text) {
     progressFill.textContent = text || (percent.toFixed(1) + '%');
 }
 
+/**
+ * CSVを読み込み、中心座標・ラベル・Z列の有無を返す
+ * @returns {{ centers: number[][], labels: string[], hasZ: boolean }}
+ */
 async function readCSV() {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -180,25 +187,30 @@ async function readCSV() {
                 const text = e.target.result;
                 const lines = text.split('\n').map(l => l.trim()).filter(l => l);
                 const centers = [];
-                
+                const labels = [];
+                let hasZ = false;
+
                 for (const line of lines) {
                     if (line.toLowerCase().includes('label')) continue;
-                    
-                    const parts = line.split(',');
-                    if (parts.length >= 4) {
+
+                    const parts = line.split(',').map(p => p.trim());
+                    if (parts.length >= 3) {
+                        const label = parts[0];
                         const x = parseFloat(parts[1]);
                         const y = parseFloat(parts[2]);
-                        const z = parseFloat(parts[3]);
-                        if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
-                            centers.push([x, y, z]);
-                        }
+                        if (isNaN(x) || isNaN(y)) continue;
+                        const z = parts.length >= 4 ? parseFloat(parts[3]) : NaN;
+                        if (parts.length >= 4 && !isNaN(z)) hasZ = true;
+                        // フィルタ用に z は数値に（未指定時は 0。水平投影で点群から更新する）
+                        centers.push([x, y, !isNaN(z) ? z : 0]);
+                        labels.push(label);
                     }
                 }
-                
+
                 if (centers.length === 0) {
                     reject(new Error('CSVから有効な座標が読み取れませんでした'));
                 } else {
-                    resolve(centers);
+                    resolve({ centers, labels, hasZ });
                 }
             } catch (err) {
                 reject(err);
@@ -207,6 +219,45 @@ async function readCSV() {
         reader.onerror = () => reject(new Error('CSVファイルの読み込みに失敗しました'));
         reader.readAsText(csvFile);
     });
+}
+
+/**
+ * 水平投影時: 各中心について、XY最近傍3点の最小Zで centers を更新する
+ * @param {number[][]} centers - [x,y,z] の配列（破壊的に z を更新）
+ * @param {Object[]} filteredPoints - {x,y,z} の配列
+ * @param {number} radius - 半径
+ */
+function updateCentersZFromNearest3(centers, filteredPoints, radius) {
+    const r2 = radius * radius;
+    for (let j = 0; j < centers.length; j++) {
+        const [cx, cy] = centers[j];
+        const candidates = filteredPoints.filter(p => {
+            const dx = p.x - cx, dy = p.y - cy;
+            return dx * dx + dy * dy <= r2;
+        });
+        candidates.sort((a, b) => {
+            const da = (a.x - cx) ** 2 + (a.y - cy) ** 2;
+            const db = (b.x - cx) ** 2 + (b.y - cy) ** 2;
+            return da - db;
+        });
+        const top3 = candidates.slice(0, 3);
+        if (top3.length > 0) {
+            const minZ = Math.min(...top3.map(p => p.z));
+            centers[j][2] = minZ;
+        }
+    }
+}
+
+/**
+ * 更新されたCSV文字列を生成（label,x,y,z）
+ */
+function buildUpdatedCSV(centers, labels) {
+    const header = 'label,x,y,z';
+    const rows = centers.map((c, i) => {
+        const z = (c[2] !== undefined && !isNaN(c[2])) ? c[2] : '';
+        return `${labels[i] || ''},${c[0]},${c[1]},${z}`;
+    });
+    return header + '\n' + rows.join('\n');
 }
 
 // ============================================================================
@@ -915,8 +966,11 @@ async function processFiles() {
         
         // CSV読み込み
         addLog('CSVファイルを読み込んでいます...');
-        centers = await readCSV();
-        addLog(`中心座標を${centers.length}件読み込みました`);
+        const csvResult = await readCSV();
+        centers = csvResult.centers;
+        csvLabels = csvResult.labels;
+        csvHasZ = csvResult.hasZ;
+        addLog(`中心座標を${centers.length}件読み込みました${csvHasZ ? '' : '（Z列なし→水平投影時に点群から補完）'}`);
         updateProgress(10, 'CSV読込完了');
         
         const radius = parseFloat(radiusInput.value);
@@ -1071,11 +1125,20 @@ async function processFiles() {
         updateProgress(95, 'フィルタリング完了');
         addLog(`処理済み: ${processedCount.toLocaleString()}点`);
         addLog(`抽出点数: ${filteredPoints.length.toLocaleString()}点`);
-        
+
+        // 水平投影時: 各中心のXY最近傍3点の最小Zで centers を更新し、CSV用データを用意
+        let updatedCsvBlobUrl = null;
+        if (useHorizontal && filteredPoints.length > 0) {
+            updateCentersZFromNearest3(centers, filteredPoints, radius);
+            const csvText = buildUpdatedCSV(centers, csvLabels);
+            updatedCsvBlobUrl = URL.createObjectURL(new Blob([csvText], { type: 'text/csv;charset=utf-8' }));
+            addLog(`水平投影: 各中心のXY最近傍3点の最小ZでCSVを更新しました${csvHasZ ? '' : '（Z列を付加）'}`);
+        }
+
         if (filteredPoints.length === 0) {
             throw new Error('指定された範囲内に点が見つかりませんでした');
         }
-        
+
         // LAS生成
         addLog('LASファイルを生成しています...');
         const outputLasBuffer = createLASFile(filteredPoints, header);
@@ -1094,7 +1157,18 @@ async function processFiles() {
             出力点数: ${filteredPoints.length.toLocaleString()}点<br>
             ファイルサイズ: ${formatFileSize(outputLasBuffer.byteLength)}
         `;
-        
+
+        if (downloadCsvBtn) {
+            if (updatedCsvBlobUrl) {
+                downloadCsvBtn.href = updatedCsvBlobUrl;
+                downloadCsvBtn.download = 'centers_updated.csv';
+                downloadCsvBtn.style.display = 'inline-block';
+            } else {
+                downloadCsvBtn.style.display = 'none';
+                downloadCsvBtn.removeAttribute('href');
+            }
+        }
+
         addLog('✅ 処理が完了しました！');
         
     } catch (err) {
