@@ -10,7 +10,7 @@ LAZ/LAS 点群をブラウザ内で処理するツール群。中心抽出・立
 
 サーバー不要でブラウザ上でLAZ/LASを処理できます。1GB以上のファイルも対応可能
 
-![LAZ Center Picking UI](assets/ui-screenshot.png)
+![よく使う点群処理 UI](assets/ui-screenshotV2.png)
 
 ---
 
