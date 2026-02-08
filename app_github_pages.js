@@ -245,8 +245,7 @@ if (copcSearchBtn) {
                 showCopcMessage('X・Yに数値を入力してください。', true);
                 return;
             }
-            // 手入力も測量系に合わせて XY を入れ替えてから経緯度変換（Easting, Northing の順で proj4 に渡す）
-            const { lon, lat } = convertXYToLonLat(epsg, y, x);
+            const { lon, lat } = convertPlaneRectToLonLat(epsg, x, y);
             console.log('Converted lon, lat', { lon, lat });
             areaWkt = `POINT(${lon} ${lat})`;
         } else {
@@ -428,7 +427,7 @@ const COPC_3DDB_DEFAULT_BASE = 'https://gsrt.digiarc.aist.go.jp/3ddb_demo';
 let copcCandidates = [];
 
 /**
- * 平面直角座標（X=Easting, Y=Northing）を JGD2011 経緯度（lon, lat）に変換
+ * 平面直角座標（proj4 の x=Easting, y=Northing）を JGD2011 経緯度に変換（内部用）
  * @param {string|number} epsg - 系のEPSGコード（例: "6677"）
  * @param {number} x - Easting (m)
  * @param {number} y - Northing (m)
@@ -448,6 +447,19 @@ function convertXYToLonLat(epsg, x, y) {
     if (!proj4.defs(dst)) proj4.defs(dst, '+proj=longlat +ellps=GRS80 +datum=GRS80 +no_defs');
     const [lon, lat] = proj4(src, dst).forward([x, y]);
     return { lon, lat };
+}
+
+/**
+ * 平面直角座標（測量系・手入力/SIMA共通）を JGD2011 経緯度に変換
+ * 測量系では第1値・第2値の並びが proj4 の (Easting, Northing) と異なるため、
+ * ここで XY を入れ替えてから convertXYToLonLat に渡す。
+ * @param {string|number} epsg - 系のEPSGコード（例: "6677"）
+ * @param {number} first - 入力の第1値（手入力のX欄 / SIMAの第1列）
+ * @param {number} second - 入力の第2値（手入力のY欄 / SIMAの第2列）
+ * @returns {{ lon: number, lat: number }} 経度・緯度（度）
+ */
+function convertPlaneRectToLonLat(epsg, first, second) {
+    return convertXYToLonLat(epsg, second, first);
 }
 
 function getPlaneRectangularDefs() {
@@ -548,17 +560,16 @@ async function searchCopc(lon, lat, baseUrl, opts = {}) {
 
 /**
  * SIMA ポリゴン（平面直角座標の頂点配列）を経緯度ポリゴンの WKT に変換
- * SIMA/測量座標系は [simaX, simaY] の並びのため、proj4 の (Easting, Northing) に合わせて XY を入れ替えて変換する（simaToMathPolygon と同じルール）
- * @param {number[][]} polygonXY - [[simaX, simaY], ...] parseSim の戻り値（測量座標系）
+ * 手入力と同様に convertPlaneRectToLonLat で統一して経緯度変換する
+ * @param {number[][]} polygonXY - [[第1列, 第2列], ...] parseSim の戻り値（測量座標系）
  * @param {string} epsg - 系の EPSG コード
  * @returns {string} POLYGON((lon1 lat1, lon2 lat2, ..., lon1 lat1))
  */
 function simaPolygonToWkt(polygonXY, epsg) {
     if (!polygonXY || polygonXY.length < 3) throw new Error('ポリゴンは3頂点以上必要です');
     const ring = [];
-    for (const [simaX, simaY] of polygonXY) {
-        // 測量座標系 → 平面直角 (Easting, Northing): XY を入れ替え
-        const { lon, lat } = convertXYToLonLat(epsg, simaY, simaX);
+    for (const [first, second] of polygonXY) {
+        const { lon, lat } = convertPlaneRectToLonLat(epsg, first, second);
         ring.push(`${lon} ${lat}`);
     }
     ring.push(ring[0]); // 閉じる
