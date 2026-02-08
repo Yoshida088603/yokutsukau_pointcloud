@@ -201,9 +201,26 @@ processBtn.addEventListener('click', () => {
     return processFiles();
 });
 
-// 3DDB COPC: 検索・ダウンロードボタン
+// 3DDB COPC: 入力方法切替・検索・ダウンロード
 const copcSearchBtn = document.getElementById('copcSearchBtn');
 const copcDownloadBtn = document.getElementById('copcDownloadBtn');
+const copcPointInputs = document.getElementById('copcPointInputs');
+const copcSimInput = document.getElementById('copcSimInput');
+const copcSimFile = document.getElementById('copcSimFile');
+const copcSimInfo = document.getElementById('copcSimInfo');
+document.querySelectorAll('input[name="copcInputMode"]').forEach((radio) => {
+    radio.addEventListener('change', () => {
+        const isPoint = document.querySelector('input[name="copcInputMode"]:checked')?.value === 'point';
+        if (copcPointInputs) copcPointInputs.style.display = isPoint ? 'block' : 'none';
+        if (copcSimInput) copcSimInput.style.display = isPoint ? 'none' : 'block';
+    });
+});
+if (copcSimFile && copcSimInfo) {
+    copcSimFile.addEventListener('change', () => {
+        const f = copcSimFile.files?.[0];
+        copcSimInfo.textContent = f ? `${f.name} (${formatFileSize(f.size)})` : '画地SIMAを選択すると、ポリゴン範囲内のCOPCを検索します';
+    });
+}
 if (copcSearchBtn) {
     copcSearchBtn.addEventListener('click', async () => {
         const epsgEl = document.getElementById('copcEpsg');
@@ -211,25 +228,48 @@ if (copcSearchBtn) {
         const yEl = document.getElementById('copcY');
         const baseEl = document.getElementById('copcApiBase');
         const epsg = epsgEl?.value || '6677';
-        const x = parseFloat(xEl?.value);
-        const y = parseFloat(yEl?.value);
         const baseUrl = baseEl?.value?.trim() || COPC_3DDB_DEFAULT_BASE;
         const messageEl = document.getElementById('copcMessage');
         const listEl = document.getElementById('copcCandidateList');
         const radiosEl = document.getElementById('copcCandidateRadios');
+        const isPointMode = document.querySelector('input[name="copcInputMode"]:checked')?.value === 'point';
         if (messageEl) messageEl.style.display = 'none';
         if (listEl) listEl.style.display = 'none';
-        if (!Number.isFinite(x) || !Number.isFinite(y)) {
-            showCopcMessage('X・Yに数値を入力してください。', true);
-            console.warn('COPC search: invalid X or Y', { x, y });
-            return;
+
+        let areaWkt = null;
+        let limit = 50;
+        if (isPointMode) {
+            const x = parseFloat(xEl?.value);
+            const y = parseFloat(yEl?.value);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) {
+                showCopcMessage('X・Yに数値を入力してください。', true);
+                return;
+            }
+            // 手入力も測量系に合わせて XY を入れ替えてから経緯度変換（Easting, Northing の順で proj4 に渡す）
+            const { lon, lat } = convertXYToLonLat(epsg, y, x);
+            console.log('Converted lon, lat', { lon, lat });
+            areaWkt = `POINT(${lon} ${lat})`;
+        } else {
+            const file = copcSimFile?.files?.[0];
+            if (!file) {
+                showCopcMessage('SIMA形式（.sim）ファイルを選択してください。', true);
+                return;
+            }
+            const text = await file.text();
+            const polygonXY = parseSim(text);
+            if (!polygonXY || polygonXY.length < 3) {
+                showCopcMessage('SIMAから有効なポリゴン（3頂点以上）を取得できませんでした。', true);
+                return;
+            }
+            areaWkt = simaPolygonToWkt(polygonXY, epsg);
+            limit = 200;
+            console.log('SIMA ポリゴン:', polygonXY.length, '頂点 → WKT で検索');
         }
+
         copcSearchBtn.disabled = true;
         try {
-            const { lon, lat } = convertXYToLonLat(epsg, x, y);
-            console.log('Converted lon, lat', { lon, lat });
             const useProxy = document.getElementById('copcUseProxy')?.checked === true;
-            const candidates = await searchCopc(lon, lat, baseUrl, { useProxy });
+            const candidates = await searchCopcArea(areaWkt, baseUrl, { useProxy }, limit);
             copcCandidates = candidates;
             if (candidates.length === 0) {
                 showCopcMessage('該当COPCなし');
@@ -427,17 +467,16 @@ function getPlaneRectangularDefs() {
 }
 
 /**
- * 3DDB API で COPC 候補を検索
- * @param {number} lon - 経度（度）
- * @param {number} lat - 緯度（度）
+ * 3DDB API で area WKT（POINT または POLYGON）により COPC 候補を検索
+ * @param {string} areaWkt - WKT（例: "POINT(lon lat)" または "POLYGON((lon1 lat1, lon2 lat2, ...))"）
  * @param {string} baseUrl - APIベースURL
  * @param {{ useProxy?: boolean }} [opts] - useProxy: true で同一オリジンの /api/3ddb_proxy 経由で取得（CORS回避）
- * @returns {Promise<Array<{ reg_id: number, title: string, external_link: string }>>}
+ * @param {number} [limit=50] - 取得上限
+ * @returns {Promise<Array<{ reg_id: number, title: string, external_link: string, isZip?: boolean }>>}
  */
-async function searchCopc(lon, lat, baseUrl, opts = {}) {
+async function searchCopcArea(areaWkt, baseUrl, opts = {}, limit = 50) {
     const base = (baseUrl || COPC_3DDB_DEFAULT_BASE).replace(/\/$/, '');
-    const wkt = `POINT(${lon} ${lat})`;
-    const apiPath = `/api/v1/services/ALL/features?area=${encodeURIComponent(wkt)}&limit=50`;
+    const apiPath = `/api/v1/services/ALL/features?area=${encodeURIComponent(areaWkt)}&limit=${limit}`;
     let url = base + apiPath;
     if (opts.useProxy && typeof location !== 'undefined' && location.origin) {
         url = location.origin + '/api/3ddb_proxy?url=' + encodeURIComponent(url);
@@ -497,6 +536,33 @@ async function searchCopc(lon, lat, baseUrl, opts = {}) {
         });
     }
     return candidates;
+}
+
+/**
+ * 1点の経緯度で COPC 検索（searchCopcArea のラッパー）
+ */
+async function searchCopc(lon, lat, baseUrl, opts = {}) {
+    const wkt = `POINT(${lon} ${lat})`;
+    return searchCopcArea(wkt, baseUrl, opts, 50);
+}
+
+/**
+ * SIMA ポリゴン（平面直角座標の頂点配列）を経緯度ポリゴンの WKT に変換
+ * SIMA/測量座標系は [simaX, simaY] の並びのため、proj4 の (Easting, Northing) に合わせて XY を入れ替えて変換する（simaToMathPolygon と同じルール）
+ * @param {number[][]} polygonXY - [[simaX, simaY], ...] parseSim の戻り値（測量座標系）
+ * @param {string} epsg - 系の EPSG コード
+ * @returns {string} POLYGON((lon1 lat1, lon2 lat2, ..., lon1 lat1))
+ */
+function simaPolygonToWkt(polygonXY, epsg) {
+    if (!polygonXY || polygonXY.length < 3) throw new Error('ポリゴンは3頂点以上必要です');
+    const ring = [];
+    for (const [simaX, simaY] of polygonXY) {
+        // 測量座標系 → 平面直角 (Easting, Northing): XY を入れ替え
+        const { lon, lat } = convertXYToLonLat(epsg, simaY, simaX);
+        ring.push(`${lon} ${lat}`);
+    }
+    ring.push(ring[0]); // 閉じる
+    return `POLYGON((${ring.join(', ')}))`;
 }
 
 /**
