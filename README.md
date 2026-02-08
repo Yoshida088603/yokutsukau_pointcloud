@@ -6,7 +6,7 @@ LAZ/LAS 点群をブラウザ内で処理するツール群。中心抽出・立
 
 ## 🌐 ライブデモ（GitHub Pages）
 
-**👉 [https://yoshida088603.github.io/csv_center_picking/](https://yoshida088603.github.io/csv_center_picking/)**
+**👉 [https://yoshida088603.github.io/yokutsukau_pointcloud/](https://yoshida088603.github.io/yokutsukau_pointcloud/)**
 
 サーバー不要でブラウザ上でLAZ/LASを処理できます。1GB以上のファイルも対応可能
 
@@ -54,7 +54,7 @@ python -m http.server 8000
 
 1. ルートに `index.html`（ブラウザ完結版）を配置済み。`app_github_pages.js` をアップロード
 2. GitHub Pages を有効化
-3. `https://<username>.github.io/csv_center_picking/` でアクセス
+3. `https://<username>.github.io/yokutsukau_pointcloud/` でアクセス
 
 **⚠️ 注意**: 必ずルート（`/` または `index.html`）を開いてください。`/variants/index.html` はサーバー版用のため、GitHub Pages では API がなく `Failed to fetch` になります。
 

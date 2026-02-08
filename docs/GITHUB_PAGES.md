@@ -16,7 +16,7 @@
 ## 📁 ファイル構成
 
 ```
-csv_center_picking/
+yokutsukau_pointcloud/
 ├── index.html                  ← エントリ（GitHub Pages用）
 ├── app_github_pages.js         ← laz-perf使用のJavaScript
 ├── variants/                   ← 別構成（サーバー版・Pyodide版など）
@@ -39,7 +39,7 @@ csv_center_picking/
    - Source: `main`ブランチ、`/`フォルダを選択
 
 3. **アクセス**
-   - `https://<username>.github.io/csv_center_picking/`でアクセス
+   - `https://<username>.github.io/yokutsukau_pointcloud/`でアクセス
 
 ### ローカルでテストする場合
 

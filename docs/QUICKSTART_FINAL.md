@@ -91,7 +91,7 @@ http://localhost:8000/index.html
 ## 📁 ファイル構成
 
 ```
-csv_center_picking/
+yokutsukau_pointcloud/
 ├── scripts/
 │   ├── server.py              ← Pythonサーバー（LAZ処理API）
 │   ├── clip_spheres_stream.py ← コマンドライン版
