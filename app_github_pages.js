@@ -197,6 +197,7 @@ processBtn.addEventListener('click', () => {
     if (mode === 'boundary') return processBoundaryTransform();
     if (mode === 'section') return processSectionMode();
     if (mode === 'polygon') return processPolygonBoundary();
+    if (mode === 'target') return processTargetCorners();
     return processFiles();
 });
 
@@ -210,13 +211,16 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         const sectionSettings = document.getElementById('sectionSettings');
         const simSection = document.getElementById('simSection');
         const polygonSettings = document.getElementById('polygonSettings');
+        const targetSettings = document.getElementById('targetSettings');
         const isCenter = mode === 'center';
         const isBoundaryLike = mode === 'boundary' || mode === 'section';
         const isPolygon = mode === 'polygon';
+        const isTarget = mode === 'target';
         if (csvSection) csvSection.style.display = isCenter ? 'block' : 'none';
         if (boundarySection) boundarySection.style.display = isBoundaryLike ? 'block' : 'none';
         if (simSection) simSection.style.display = isPolygon ? 'block' : 'none';
         if (polygonSettings) polygonSettings.style.display = isPolygon ? 'block' : 'none';
+        if (targetSettings) targetSettings.style.display = isTarget ? 'block' : 'none';
         if (centerSettings) centerSettings.style.display = isCenter ? 'block' : 'none';
         if (sectionSettings) sectionSettings.style.display = mode === 'section' ? 'block' : 'none';
         checkFiles();
@@ -225,7 +229,7 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
 
 function checkFiles() {
     const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
-    if (mode === 'boundary' || mode === 'section') {
+    if (mode === 'boundary' || mode === 'section' || mode === 'target') {
         processBtn.disabled = !(lazFile && wasmReady);
     } else if (mode === 'polygon') {
         processBtn.disabled = !(lazFile && simFile && wasmReady);
@@ -563,6 +567,32 @@ function generateSpherePointCloud(cx, cy, cz, radius = 0.01, numPoints = 50, wit
             p.blue = 65535;
         }
         points.push(p);
+    }
+    return points;
+}
+
+/** 白黒ターゲットの点間ピッチ（m）。0.005 = 5mm。 */
+const TARGET_PITCH = 0.005;
+
+/**
+ * 白黒チェッカーのターゲット点群を生成。Z=cz の平面に配置。点密度は TARGET_PITCH（0.005m）で固定。
+ * 2×2 象限: 左上黒・右上白・左下白・右下黒。
+ */
+function generateCheckerboardTarget(cx, cy, cz, halfSize = 0.1) {
+    const points = [];
+    const side = 2 * halfSize;
+    const gridN = Math.max(2, Math.round(side / TARGET_PITCH) + 1);
+    const step = side / (gridN - 1);
+    const x0 = cx - halfSize;
+    const y0 = cy - halfSize;
+    for (let i = 0; i < gridN; i++) {
+        for (let j = 0; j < gridN; j++) {
+            const x = x0 + i * step;
+            const y = y0 + j * step;
+            const isBlack = (x < cx && y >= cy) || (x >= cx && y < cy);
+            const v = isBlack ? 0 : 65535;
+            points.push({ x, y, z: cz, intensity: 0, red: v, green: v, blue: v });
+        }
     }
     return points;
 }
@@ -1953,6 +1983,124 @@ async function processPolygonBoundary() {
         `;
         if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
         addLog('✅ ポリゴン境界（幅1cmライン描画）が完了しました。');
+    } catch (err) {
+        console.error(err);
+        addLog(`❌ エラー: ${err.message}`);
+        alert(`エラー: ${err.message}`);
+    } finally {
+        processBtn.disabled = false;
+    }
+}
+
+// ============================================================================
+// ターゲット配置（四隅）
+// ============================================================================
+
+/**
+ * 入力点群の四隅に白黒ターゲットを配置し、ターゲット中心座標を点群タイトルとして出力する。
+ */
+async function processTargetCorners() {
+    try {
+        if (!wasmReady || !LazPerf) {
+            throw new Error('LAZ解凍エンジンが初期化されていません。ページをリロードしてください。');
+        }
+        if (!lazFile) throw new Error('LAZ/LASファイルを選択してください。');
+
+        processBtn.disabled = true;
+        progressSection.classList.add('active');
+        resultSection.classList.remove('active');
+        logDiv.innerHTML = '';
+        addLog('ターゲット配置（四隅）を開始します...');
+        updateProgress(0, '初期化中');
+
+        const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
+        const headerBuffer = await headerBlob.arrayBuffer();
+        const header = parseLASHeader(headerBuffer);
+        if (header.pointDataOffset > 375) {
+            const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
+            Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
+        }
+        const { minX, maxX, minY, maxY, minZ, maxZ } = header;
+        if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY) || !Number.isFinite(minZ)) {
+            throw new Error('点群の範囲（min/max）がヘッダーから取得できません。');
+        }
+        addLog(`点群範囲: X[${minX}, ${maxX}] Y[${minY}, ${maxY}] Z[${minZ}, ${maxZ}]`);
+        updateProgress(10, '点群読込中');
+
+        const fileSizeMB = lazFile.size / (1024 * 1024);
+        const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
+        const chunkSizeMB = parseInt(chunkSizeInput?.value, 10) || DEFAULT_CHUNK_SIZE_MB;
+        let points = [];
+
+        if (header.isCompressed) {
+            addLog('LAZを解凍して全点読み込み中...');
+            const arrayBuffer = await lazFile.arrayBuffer();
+            const lasBuffer = await decompressLAZWithLazPerf(arrayBuffer, header);
+            const newHeader = parseLASHeader(lasBuffer);
+            Object.assign(header, newHeader);
+            header.isCompressed = false;
+            points = readAllPointsFromLASBuffer(lasBuffer, header);
+            addLog(`読込: ${points.length.toLocaleString()}点`);
+        } else if (useStreaming) {
+            addLog('非圧縮LASをストリーミングで全点読み込み中...');
+            points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
+        } else {
+            addLog('LASを全点読み込み中...');
+            const arrayBuffer = await lazFile.arrayBuffer();
+            points = readAllPointsFromLASBuffer(arrayBuffer, header);
+            addLog(`読込: ${points.length.toLocaleString()}点`);
+        }
+
+        const sizeInput = document.getElementById('targetSize');
+        const targetSizeM = (sizeInput && Number.isFinite(parseFloat(sizeInput.value)) && parseFloat(sizeInput.value) > 0)
+            ? parseFloat(sizeInput.value) : 0.2;
+        const useMaxZ = document.querySelector('input[name="targetZ"]:checked')?.value === 'maxZ';
+        const targetZ = useMaxZ ? maxZ : minZ;
+        if (!Number.isFinite(targetZ)) throw new Error('選択したZ（minZ/maxZ）が取得できません。');
+        addLog(`ターゲット高さ: ${useMaxZ ? 'maxZ（上面）' : 'minZ（下面）'} = ${targetZ}`);
+        const TARGET_HALF = targetSizeM / 2;
+        const corners = [
+            { x: minX, y: minY, z: targetZ },
+            { x: maxX, y: minY, z: targetZ },
+            { x: minX, y: maxY, z: targetZ },
+            { x: maxX, y: maxY, z: targetZ }
+        ];
+        let totalTargetPoints = 0;
+        for (const c of corners) {
+            const t = generateCheckerboardTarget(c.x, c.y, c.z, TARGET_HALF);
+            points.push(...t);
+            totalTargetPoints += t.length;
+        }
+        addLog(`ターゲット追加: 四隅×${targetSizeM}m、合計+${totalTargetPoints}点`);
+
+        for (const p of points) {
+            if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
+        }
+
+        updateProgress(95, 'LAS出力生成中');
+        const outputLasBuffer = createLASFile(points, header);
+        updateProgress(100, '完了');
+
+        const coordsLines = corners.map(c => `${c.x}, ${c.y}, ${c.z}`);
+        const coordsText = coordsLines.join('\n');
+        const blob = new Blob([outputLasBuffer], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        downloadBtn.href = url;
+        downloadBtn.download = 'output_target.las';
+        resultSection.classList.add('active');
+        resultText.innerHTML = `
+            ターゲット配置（四隅）が完了しました。<br>
+            出力点数: ${points.length.toLocaleString()}点、ターゲットサイズ: ${targetSizeM}m<br>
+            ファイルサイズ: ${formatFileSize(outputLasBuffer.byteLength)}<br>
+            <label style="display:block; margin-top:10px; font-weight:600;">点群タイトル（ターゲット中心座標）コピー用:</label>
+            <textarea id="targetCoordsCopy" readonly rows="5" style="width:100%; margin-top:4px; font-family:monospace; font-size:13px; padding:8px; box-sizing:border-box;"></textarea>
+        `;
+        const ta = document.getElementById('targetCoordsCopy');
+        if (ta) ta.value = coordsText;
+        if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
+        addLog('点群タイトル（ターゲット中心座標）:');
+        coordsLines.forEach((line, i) => addLog(`  ${i + 1}: ${line}`));
+        addLog('✅ ターゲット配置（四隅）が完了しました。');
     } catch (err) {
         console.error(err);
         addLog(`❌ エラー: ${err.message}`);

@@ -302,6 +302,10 @@
                         <input type="radio" name="processMode" id="processModePolygon" value="polygon">
                         境界ポリゴン（SIMA形式）を点群上に可視化
                     </label>
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                        <input type="radio" name="processMode" id="processModeTarget" value="target">
+                        ターゲット配置（四隅）
+                    </label>
                 </div>
             </div>
 
@@ -389,6 +393,28 @@
                     <label for="polygonLineWidth">線幅 (m)</label>
                     <input type="number" id="polygonLineWidth" value="0.01" min="0.001" step="any">
                     <small style="color: #666; font-size: 12px;">境界に沿った帯の幅。デフォルト 0.01 = 1cm。内側・外側に半分ずつオフセットします。</small>
+                </div>
+            </div>
+
+            <div id="targetSettings" style="display: none;" class="settings">
+                <h4 style="margin-bottom: 10px;">ターゲット配置の設定</h4>
+                <div class="setting-item">
+                    <label for="targetSize">ターゲットサイズ (m)</label>
+                    <input type="number" id="targetSize" value="0.2" min="0.01" step="any">
+                    <small style="color: #666; font-size: 12px;">四隅に配置する白黒チェッカーの1辺の長さ。デフォルト 0.2m。</small>
+                </div>
+                <div class="setting-item" style="margin-top: 10px;">
+                    <label>ターゲットの高さ（Z）</label>
+                    <div style="display: flex; gap: 16px; margin-top: 6px;">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                            <input type="radio" name="targetZ" value="minZ" checked>
+                            minZ（下面）
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                            <input type="radio" name="targetZ" value="maxZ">
+                            maxZ（上面）
+                        </label>
+                    </div>
                 </div>
             </div>
         </div>
