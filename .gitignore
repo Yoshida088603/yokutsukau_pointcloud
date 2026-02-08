@@ -48,3 +48,6 @@ wasm/LASzip/
 
 # ターミナルログ
 terminals/
+
+# 参照用（Git管理しない）
+dxf4segmentation/
