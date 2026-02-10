@@ -531,7 +531,11 @@ async function searchCopcArea(areaWkt, baseUrl, opts = {}, limit = 50) {
     const res = await fetch(url);
     if (!res.ok) {
         if (opts.useProxy && res.status === 404) {
-            throw new Error('プロキシがありません。ターミナルで「python scripts/serve_with_3ddb_proxy.py」を実行してから、このページを http://localhost:8000 で開き直してください。');
+            const isGitHubPages = typeof location !== 'undefined' && /github\.io$/i.test(location.origin || '');
+            const msg = isGitHubPages
+                ? 'GitHub Pages ではプロキシは使えません。「プロキシ経由で検索」のチェックを外してから再度検索してください。'
+                : 'プロキシがありません。ターミナルで「python scripts/serve_with_3ddb_proxy.py」を実行してから、このページを http://localhost:8000 で開き直してください。';
+            throw new Error(msg);
         }
         throw new Error(`APIエラー: ${res.status} ${res.statusText}`);
     }
