@@ -1081,7 +1081,8 @@ function filterPointsBatchFast(points, centers, radius, useSphere = true, useHor
 }
 
 /**
- * バッチフィルタリング（旧版、互換性のため保持）
+ * バッチフィルタリング（旧版）。未使用。filterPointsBatchFast を利用すること。
+ * @deprecated 互換性のため残しているが呼び出しはない。将来削除可。
  */
 function filterPointsBatch(points, centers, radius, useSphere = true, useHorizontal = false) {
     const r2 = radius * radius;
@@ -1169,6 +1170,34 @@ function parseLASHeader(buffer) {
     };
 }
 
+/**
+ * ファイルサイズとストリーミング用オプションを取得（共通化）
+ * @param {File|Blob} lazFile - LAZ/LAS ファイル
+ * @returns {{ fileSizeMB: number, useStreaming: boolean, chunkSizeMB: number }}
+ */
+function getStreamingOptions(lazFile) {
+    const fileSizeMB = lazFile.size / (1024 * 1024);
+    const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
+    const chunkSizeMB = parseInt(chunkSizeInput?.value, 10) || DEFAULT_CHUNK_SIZE_MB;
+    return { fileSizeMB, useStreaming, chunkSizeMB };
+}
+
+/**
+ * File/Blob から LAS/LAZ ヘッダーを読み込む（共通化）
+ * @param {File|Blob} lazFile - LAZ/LAS ファイル
+ * @returns {Promise<Object>} parseLASHeader と同じ形式のヘッダー
+ */
+async function readLASHeaderFromFile(lazFile) {
+    const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
+    const headerBuffer = await headerBlob.arrayBuffer();
+    const header = parseLASHeader(headerBuffer);
+    if (header.pointDataOffset > 375) {
+        const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
+        Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
+    }
+    return header;
+}
+
 /** 点(px,py)からXY範囲ボックス（minX,maxX,minY,maxY）までの最短距離。内側なら0 */
 function distanceFromPointToBox(px, py, minX, maxX, minY, maxY) {
     const nx = Math.max(minX, Math.min(maxX, px));
@@ -1188,8 +1217,64 @@ function logAndWarnDistanceToExtent(header, xA, yA, xB, yB, warnThresholdM = 50)
 }
 
 /**
- * laz-perfを使ってLAZを解凍（ストリーミング処理対応）
- * ポイント単位で解凍し、即座にフィルタリングしてメモリ効率を最大化
+ * LAZを1点ずつ解凍し、各点を onPoint(point) に渡す共通ループ（メモリ効率的）
+ * @param {ArrayBuffer} arrayBuffer - LAZ圧縮データ
+ * @param {Object} header - parseLASHeader の戻り値
+ * @param {(point: {x,y,z,intensity,red?,green?,blue?}, pointIndex: number) => void} onPoint - 解凍した1点ごとに呼ばれる（第2引数は0始まりの通し番号）
+ * @param {{ onProgress?: (i: number, total: number) => void }} [opts] - 進捗コールバックなど
+ */
+async function decompressLAZStreaming(arrayBuffer, header, onPoint, opts = {}) {
+    const fileSize = arrayBuffer.byteLength;
+    const filePtr = LazPerf._malloc(fileSize);
+    const fileHeap = new Uint8Array(LazPerf.HEAPU8.buffer, filePtr, fileSize);
+    fileHeap.set(new Uint8Array(arrayBuffer));
+
+    const laszip = new LazPerf.LASZip();
+    laszip.open(filePtr, fileSize);
+
+    const pointCount = header.numPoints;
+    const pointRecordLength = header.pointRecordLength;
+    const pointPtr = LazPerf._malloc(pointRecordLength);
+    const pointHeap = new Uint8Array(LazPerf.HEAPU8.buffer, pointPtr, pointRecordLength);
+    const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    const rgbOffset = getRgbByteOffset(header.pointFormat);
+    const view = new DataView(pointHeap.buffer, pointHeap.byteOffset, pointRecordLength);
+    const onProgress = opts.onProgress;
+
+    try {
+        for (let i = 0; i < pointCount; i++) {
+            laszip.getPoint(pointPtr);
+            const rawX = view.getInt32(0, true);
+            const rawY = view.getInt32(4, true);
+            const rawZ = view.getInt32(8, true);
+            const intensity = view.getUint16(12, true);
+            const x = rawX * header.scaleX + header.offsetX;
+            const y = rawY * header.scaleY + header.offsetY;
+            const z = rawZ * header.scaleZ + header.offsetZ;
+            const point = { x, y, z, intensity };
+            if (hasRGB && rgbOffset >= 0 && pointRecordLength >= rgbOffset + 6) {
+                point.red = view.getUint16(rgbOffset, true);
+                point.green = view.getUint16(rgbOffset + 2, true);
+                point.blue = view.getUint16(rgbOffset + 4, true);
+            }
+            onPoint(point, i);
+            if (onProgress && i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
+                onProgress(i, pointCount);
+                if (i % (PROGRESS_UPDATE_INTERVAL * 2) === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
+        }
+    } finally {
+        laszip.delete();
+        LazPerf._free(filePtr);
+        LazPerf._free(pointPtr);
+    }
+}
+
+/**
+ * laz-perfを使ってLAZを解凍（ストリーミング処理対応・中心抽出用）
+ * 共通の decompressLAZStreaming を利用し、フィルタに合う点だけ保持する
  */
 async function decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, radius, useSphere = true, useHorizontal = false) {
     prepareFilteringCache(centers, radius, useSphere, useHorizontal);
@@ -1197,136 +1282,52 @@ async function decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, r
     updateProgress(25, 'LAZ解凍中');
 
     const filteredPoints = [];
-    
-    // パフォーマンス測定
     const perfStart = performance.now();
-    let decompressTime = 0;
-    let filterTime = 0;
-    let progressUpdateTime = 0;
-    
     try {
-        // Emscriptenのメモリヒープにデータをコピー
-        const fileSize = arrayBuffer.byteLength;
-        const filePtr = LazPerf._malloc(fileSize);
-        const fileHeap = new Uint8Array(LazPerf.HEAPU8.buffer, filePtr, fileSize);
-        fileHeap.set(new Uint8Array(arrayBuffer));
-        
-        // LASZipオブジェクトを作成
-        const laszip = new LazPerf.LASZip();
-        
-        // ファイルを開く
-        laszip.open(filePtr, fileSize);
-        
-        const pointCount = header.numPoints;
-        const pointRecordLength = header.pointRecordLength;
-        
-        // ポイントデータ用のメモリを確保（1ポイント分のみ）
-        const pointPtr = LazPerf._malloc(pointRecordLength);
-        const pointHeap = new Uint8Array(LazPerf.HEAPU8.buffer, pointPtr, pointRecordLength);
-        
-        // RGB情報があるかチェック（フォーマット別オフセット対応）
-        const hasRGB = RGB_FORMATS.includes(header.pointFormat);
-        const rgbOffset = getRgbByteOffset(header.pointFormat);
-        
-            // 各ポイントを解凍して直接フィルタリング（メモリに保持しない）
-            // パフォーマンス測定はバッチ単位でオーバーヘッドを削減
-            const BATCH_SIZE = PERFORMANCE_BATCH_SIZE;
-            let batchStartTime = performance.now();
-            let batchDecompressTime = 0;
-            let batchFilterTime = 0;
-            
-            // ポイント解析用の変数をループ外で定義（メモリ割り当て削減）
-            const view = new DataView(pointHeap.buffer, pointHeap.byteOffset, pointRecordLength);
-            let rawX, rawY, rawZ, intensity, x, y, z, point;
-            
-            for (let i = 0; i < pointCount; i++) {
-                // バッチ単位でパフォーマンス測定
-                if (i % BATCH_SIZE === 0 && i > 0) {
-                    const batchTime = performance.now() - batchStartTime;
-                    // バッチ内の時間を推定（解凍とフィルタリングの比率を維持）
-                    batchDecompressTime += batchTime * 0.6; // 解凍が約60%
-                    batchFilterTime += batchTime * 0.2;    // フィルタリングが約20%
-                    batchStartTime = performance.now();
-                }
-                
-                // 解凍処理
-                laszip.getPoint(pointPtr);
-                
-                // ポイントデータを直接解析（最適化：変数再利用）
-                rawX = view.getInt32(0, true);
-                rawY = view.getInt32(4, true);
-                rawZ = view.getInt32(8, true);
-                intensity = view.getUint16(12, true);
-                
-                x = rawX * header.scaleX + header.offsetX;
-                y = rawY * header.scaleY + header.offsetY;
-                z = rawZ * header.scaleZ + header.offsetZ;
-                
-                // オブジェクト作成を条件付きに（フィルタリング結果のみ作成）
-                if (isPointNearCenters(x, y, z)) {
-                    point = { x, y, z, intensity };
-                    
-                    // RGB情報がある場合（フォーマット3はオフセット28）
-                    if (hasRGB && rgbOffset >= 0 && pointRecordLength >= rgbOffset + 6) {
-                        point.red = view.getUint16(rgbOffset, true);
-                        point.green = view.getUint16(rgbOffset + 2, true);
-                        point.blue = view.getUint16(rgbOffset + 4, true);
-                    }
-                    
-                    filteredPoints.push(point);
-                }
-                
-                // 進捗更新（頻度を下げてパフォーマンス向上）
-                if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
-                    const progress = 25 + (i / pointCount) * 65;
-                    updateProgress(progress, `LAZ解凍+フィルタリング: ${Math.floor((i / pointCount) * 100)}%`);
-                    addLog(`処理済み: ${i.toLocaleString()}/${pointCount.toLocaleString()}点, 抽出: ${filteredPoints.length.toLocaleString()}点`);
-                    // awaitを削減（パフォーマンス向上）
-                    if (i % (PROGRESS_UPDATE_INTERVAL * 2) === 0) {
-                        await new Promise(resolve => setTimeout(resolve, 0));
-                    }
-                }
+        await decompressLAZStreaming(arrayBuffer, header, (point) => {
+            if (isPointNearCenters(point.x, point.y, point.z)) {
+                filteredPoints.push(point);
             }
-            
-            // 最後のバッチを処理
-            const finalBatchTime = performance.now() - batchStartTime;
-            batchDecompressTime += finalBatchTime * 0.6;
-            batchFilterTime += finalBatchTime * 0.2;
-            
-            decompressTime = batchDecompressTime;
-            filterTime = batchFilterTime;
-            
-            // パフォーマンス統計を表示
-            const totalTime = performance.now() - perfStart;
-            const decompressPercent = (decompressTime / totalTime * 100).toFixed(1);
-            const filterPercent = (filterTime / totalTime * 100).toFixed(1);
-            const otherPercent = (100 - parseFloat(decompressPercent) - parseFloat(filterPercent)).toFixed(1);
-            const pointsPerSec = Math.floor(pointCount / (totalTime / 1000)).toLocaleString();
-            const totalMinutes = (totalTime / 60000).toFixed(1);
-            addLog(`⚡ パフォーマンス分析: 解凍=${decompressPercent}%, フィルタリング=${filterPercent}%, その他=${otherPercent}%`);
-            addLog(`⚡ 処理速度: ${pointsPerSec}点/秒 (総時間: ${totalMinutes}分)`);
-            
-            // ボトルネックの説明
-            if (parseFloat(decompressPercent) > 50) {
-                addLog(`💡 ボトルネック: LAZ解凍処理が最大の時間を占めています。これはlaz-perfの制約上、最適化が困難です。`);
-            } else if (parseFloat(filterPercent) > 30) {
-                addLog(`💡 ボトルネック: フィルタリング処理が時間を占めています。中心点の数や半径を調整すると改善する可能性があります。`);
+        }, {
+            onProgress(i, pointCount) {
+                const progress = 25 + (i / pointCount) * 65;
+                updateProgress(progress, `LAZ解凍+フィルタリング: ${Math.floor((i / pointCount) * 100)}%`);
+                addLog(`処理済み: ${i.toLocaleString()}/${pointCount.toLocaleString()}点, 抽出: ${filteredPoints.length.toLocaleString()}点`);
             }
-        
-        // メモリを解放
-        laszip.delete();
-        LazPerf._free(filePtr);
-        LazPerf._free(pointPtr);
-        
-        addLog(`LAZ解凍完了: ${pointCount.toLocaleString()}点`);
-        addLog(`抽出点数: ${filteredPoints.length.toLocaleString()}点`);
-        
-        return filteredPoints;
-        
+        });
     } catch (err) {
         console.error('LAZ decompression error:', err);
         throw new Error(`LAZ解凍エラー: ${err.message}`);
     }
+    const totalTime = performance.now() - perfStart;
+    const pointsPerSec = Math.floor(header.numPoints / (totalTime / 1000)).toLocaleString();
+    addLog(`LAZ解凍完了: ${header.numPoints.toLocaleString()}点`);
+    addLog(`抽出点数: ${filteredPoints.length.toLocaleString()}点`);
+    addLog(`⚡ 処理速度: ${pointsPerSec}点/秒`);
+    return filteredPoints;
+}
+
+/**
+ * LAZをストリーミング解凍して全点を配列で返す（ポリゴン・ターゲット用、解凍バッファを保持しない）
+ * @param {ArrayBuffer} arrayBuffer - LAZ圧縮データ
+ * @param {Object} header - parseLASHeader の戻り値
+ * @returns {Promise<Array>} 点の配列
+ */
+async function loadLAZAsPointsStreaming(arrayBuffer, header) {
+    const points = [];
+    addLog('LAZをストリーミング解凍して全点読み込み中...');
+    updateProgress(25, 'LAZ解凍中');
+    await decompressLAZStreaming(arrayBuffer, header, (point) => points.push(point), {
+        onProgress(i, pointCount) {
+            const progress = 25 + (i / pointCount) * 65;
+            updateProgress(progress, `LAZ解凍: ${Math.floor((i / pointCount) * 100)}%`);
+            if (i % LOG_UPDATE_INTERVAL === 0 || i === pointCount) {
+                addLog(`読込: ${i.toLocaleString()}/${pointCount.toLocaleString()}点`);
+            }
+        }
+    });
+    addLog(`読込: ${points.length.toLocaleString()}点`);
+    return points;
 }
 
 /**
@@ -1849,6 +1850,72 @@ function* readUncompressedLAS(buffer, header) {
 }
 
 // LAS出力用
+const LAS_HEADER_SIZE = 227;
+/** ポリゴンストリーミング出力の1チャンクサイズ（バイト）。ArrayBufferの2GB制限を避けるため、点データを分割して書き出す。26の倍数。 */
+const POLYGON_STREAM_CHUNK_BYTES = 52 * 1024 * 1024; // 52MB ≒ 200万点/チャンク
+
+/**
+ * 1点をLAS点レコードとしてDataViewの指定オフセットに書き込む（ストリーミング出力用）
+ * @param {DataView} view - 出力バッファのDataView
+ * @param {number} offset - 書き込み開始バイト位置
+ * @param {{x,y,z,intensity?,red?,green?,blue?,classification?}} point - 点データ
+ * @param {number} pointRecordLength - 20 または 26
+ * @param {boolean} hasRGB - Format 2 の場合 true
+ * @param {number} originX - 座標差分の基準X
+ * @param {number} originY - 座標差分の基準Y
+ * @param {number} originZ - 座標差分の基準Z
+ */
+function writeSinglePointToLASView(view, offset, point, pointRecordLength, hasRGB, originX, originY, originZ) {
+    const scale = 0.001;
+    const x = Math.round((point.x - originX) / scale);
+    const y = Math.round((point.y - originY) / scale);
+    const z = Math.round((point.z - originZ) / scale);
+    view.setInt32(offset, x, true);
+    view.setInt32(offset + 4, y, true);
+    view.setInt32(offset + 8, z, true);
+    view.setUint16(offset + 12, point.intensity || 0, true);
+    view.setUint8(offset + 14, 0);
+    view.setUint8(offset + 15, (point.classification !== undefined && point.classification !== null) ? point.classification : 0);
+    view.setInt8(offset + 16, 0);
+    view.setUint8(offset + 17, 0);
+    view.setUint16(offset + 18, 0, true);
+    if (hasRGB) {
+        view.setUint16(offset + 20, point.red || 0, true);
+        view.setUint16(offset + 22, point.green || 0, true);
+        view.setUint16(offset + 24, point.blue || 0, true);
+    }
+}
+
+/**
+ * ストリーミング出力用にLASヘッダー（227バイト）をviewの先頭に書き込む
+ */
+function buildLASHeaderForStreamedOutput(view, pointCount, pointFormat, pointRecordLength, firstPoint, minX, maxX, minY, maxY, minZ, maxZ) {
+    const signature = new TextEncoder().encode('LASF');
+    for (let i = 0; i < 4; i++) view.setUint8(i, signature[i]);
+    view.setUint8(24, 1);
+    view.setUint8(25, 2);
+    view.setUint16(94, LAS_HEADER_SIZE, true);
+    view.setUint32(96, LAS_HEADER_SIZE, true);
+    view.setUint32(100, 0, true);
+    view.setUint8(104, pointFormat);
+    view.setUint16(105, pointRecordLength, true);
+    view.setUint32(107, pointCount, true);
+    view.setFloat64(131, 0.001, true);
+    view.setFloat64(139, 0.001, true);
+    view.setFloat64(147, 0.001, true);
+    if (firstPoint) {
+        view.setFloat64(155, firstPoint.x, true);
+        view.setFloat64(163, firstPoint.y, true);
+        view.setFloat64(171, firstPoint.z, true);
+    }
+    view.setFloat64(179, maxX, true);
+    view.setFloat64(187, minX, true);
+    view.setFloat64(195, maxY, true);
+    view.setFloat64(203, minY, true);
+    view.setFloat64(211, maxZ, true);
+    view.setFloat64(219, minZ, true);
+}
+
 /**
  * フィルタリングされたポイントからLASファイルを生成
  */
@@ -1975,22 +2042,14 @@ async function processBoundaryTransform() {
         addLog('立面図作成を開始します...');
         updateProgress(0, '初期化中');
 
-        const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
-        const headerBuffer = await headerBlob.arrayBuffer();
-        const header = parseLASHeader(headerBuffer);
-        if (header.pointDataOffset > 375) {
-            const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
-            Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
-        }
+        const header = await readLASHeaderFromFile(lazFile);
         addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
         addLog(`原点A=(${xA}, ${yA}, ${zA}), 境界B=(${xB}, ${yB}, ${zB}), 向き: ${aLeftBRight ? 'A→B（A左・B右）' : 'B→A（B左・A右）'}`);
         logAndWarnDistanceToExtent(header, xA, yA, xB, yB);
         updateProgress(10, 'ヘッダー解析完了');
 
         let points = [];
-        const fileSizeMB = lazFile.size / (1024 * 1024);
-        const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
-        const chunkSizeMB = parseInt(chunkSizeInput?.value, 10) || DEFAULT_CHUNK_SIZE_MB;
+        const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
         const SPHERE_RADIUS = 0.01;
         const SPHERE_POINTS = 50;
 
@@ -2112,20 +2171,12 @@ async function processSectionMode() {
         addLog(`A=(${xA}, ${yA}, ${zA}), B=(${xB}, ${yB}, ${zB}), 向き: ${aLeftBRight ? 'A→B' : 'B→A'}, 切抜幅: ±${halfWidth}m`);
         updateProgress(0, '初期化中');
 
-        const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
-        const headerBuffer = await headerBlob.arrayBuffer();
-        const header = parseLASHeader(headerBuffer);
-        if (header.pointDataOffset > 375) {
-            const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
-            Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
-        }
+        const header = await readLASHeaderFromFile(lazFile);
         addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
         logAndWarnDistanceToExtent(header, xA, yA, xB, yB);
         updateProgress(10, 'ヘッダー解析完了');
 
-        const fileSizeMB = lazFile.size / (1024 * 1024);
-        const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
-        const chunkSizeMB = parseInt(chunkSizeInput?.value, 10) || DEFAULT_CHUNK_SIZE_MB;
+        const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
         const SPHERE_RADIUS = 0.01;
         const SPHERE_POINTS = 50;
 
@@ -2257,6 +2308,8 @@ async function processPolygonBoundary() {
         }
         addLog(`前段: 中心ポリゴン ${centerPoly.length} 頂点`);
 
+        const header = await readLASHeaderFromFile(lazFile);
+
         const lineWidthInput = document.getElementById('polygonLineWidth');
         const lineWidthM = (lineWidthInput && Number.isFinite(parseFloat(lineWidthInput.value)) && parseFloat(lineWidthInput.value) > 0)
             ? parseFloat(lineWidthInput.value) : 0.01;
@@ -2273,81 +2326,135 @@ async function processPolygonBoundary() {
         const outerMath = simaToMathPolygon(outerPoly);
         updateProgress(5, '前段完了');
 
-        const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
-        const headerBuffer = await headerBlob.arrayBuffer();
-        const header = parseLASHeader(headerBuffer);
-        if (header.pointDataOffset > 375) {
-            const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
-            Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
-        }
         addLog(`点群: ${header.numPoints.toLocaleString()}点`);
-        const fileSizeMB = lazFile.size / (1024 * 1024);
-        const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
-        const chunkSizeMB = parseInt(chunkSizeInput?.value, 10) || DEFAULT_CHUNK_SIZE_MB;
-
+        const { useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
         let points = [];
+        let countInside = 0, countBand = 0, countOutside = 0;
+        let outputLasBuffer = null;
+
         if (header.isCompressed) {
-            addLog('LAZを解凍して全点読み込み中...');
+            addLog('LAZをストリーミング解凍しつつ3領域分類し、その場でLASに書き出しています...');
             const arrayBuffer = await lazFile.arrayBuffer();
-            const lasBuffer = await decompressLAZWithLazPerf(arrayBuffer, header);
-            const newHeader = parseLASHeader(lasBuffer);
-            Object.assign(header, newHeader);
+            const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+            const pointRecordLength = hasRGB ? 26 : 20;
+            const pointFormat = hasRGB ? 2 : 0;
+            const minX = Number.isFinite(header.minX) ? header.minX : 0;
+            const maxX = Number.isFinite(header.maxX) ? header.maxX : 0;
+            const minY = Number.isFinite(header.minY) ? header.minY : 0;
+            const maxY = Number.isFinite(header.maxY) ? header.maxY : 0;
+            const minZ = Number.isFinite(header.minZ) ? header.minZ : 0;
+            const maxZ = Number.isFinite(header.maxZ) ? header.maxZ : 0;
+
+            const chunkBytes = Math.floor(POLYGON_STREAM_CHUNK_BYTES / pointRecordLength) * pointRecordLength;
+            const pointChunks = [];
+            let currentChunk = new ArrayBuffer(chunkBytes);
+            let currentView = new DataView(currentChunk);
+            let offsetInChunk = 0;
+            let firstPoint = null;
+
+            await decompressLAZStreaming(arrayBuffer, header, (p, i) => {
+                if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
+                const inInner = innerMath.length >= 3 && pointInPolygon(p.x, p.y, innerMath);
+                const inOuter = outerMath.length >= 3 && pointInPolygon(p.x, p.y, outerMath);
+                if (inInner) {
+                    p.classification = CLASS_INSIDE;
+                    countInside++;
+                } else if (inOuter) {
+                    p.classification = CLASS_BAND;
+                    p.red = 65535;
+                    p.green = 0;
+                    p.blue = 65535;
+                    countBand++;
+                } else {
+                    p.classification = CLASS_OUTSIDE;
+                    countOutside++;
+                }
+                if (i === 0) firstPoint = p;
+                const originX = firstPoint.x;
+                const originY = firstPoint.y;
+                const originZ = firstPoint.z;
+                if (offsetInChunk + pointRecordLength > chunkBytes) {
+                    pointChunks.push(currentChunk);
+                    currentChunk = new ArrayBuffer(chunkBytes);
+                    currentView = new DataView(currentChunk);
+                    offsetInChunk = 0;
+                }
+                writeSinglePointToLASView(currentView, offsetInChunk, p, pointRecordLength, hasRGB, originX, originY, originZ);
+                offsetInChunk += pointRecordLength;
+            }, {
+                onProgress(i, pointCount) {
+                    const progress = 5 + (i / pointCount) * 90;
+                    updateProgress(progress, `解凍・分類: ${i.toLocaleString()}/${pointCount.toLocaleString()}点`);
+                    if (i % LOG_UPDATE_INTERVAL === 0 || i === pointCount) {
+                        addLog(`処理: ${i.toLocaleString()}/${pointCount.toLocaleString()}点（内側: ${countInside.toLocaleString()}, 帯: ${countBand.toLocaleString()}, 外側: ${countOutside.toLocaleString()}）`);
+                    }
+                }
+            });
+            if (offsetInChunk > 0) pointChunks.push(currentChunk.slice(0, offsetInChunk));
+            const headerBuf = new ArrayBuffer(LAS_HEADER_SIZE);
+            const headerView = new DataView(headerBuf);
+            buildLASHeaderForStreamedOutput(headerView, header.numPoints, pointFormat, pointRecordLength, firstPoint, minX, maxX, minY, maxY, minZ, maxZ);
+            outputLasBuffer = new Blob([headerBuf, ...pointChunks], { type: 'application/octet-stream' });
             header.isCompressed = false;
-            points = readAllPointsFromLASBuffer(lasBuffer, header);
-            addLog(`読込: ${points.length.toLocaleString()}点`);
+            addLog(`読込: ${header.numPoints.toLocaleString()}点`);
+            addLog(`内側: ${countInside.toLocaleString()}点, 帯: ${countBand.toLocaleString()}点, 外側: ${countOutside.toLocaleString()}点`);
         } else if (useStreaming) {
             addLog('非圧縮LASをストリーミングで全点読み込み中...');
             points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
+            updateProgress(50, '3領域分類中');
+            const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+            for (let i = 0; i < points.length; i++) {
+                const p = points[i];
+                if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
+                const inInner = innerMath.length >= 3 && pointInPolygon(p.x, p.y, innerMath);
+                const inOuter = outerMath.length >= 3 && pointInPolygon(p.x, p.y, outerMath);
+                if (inInner) { p.classification = CLASS_INSIDE; countInside++; }
+                else if (inOuter) { p.classification = CLASS_BAND; p.red = 65535; p.green = 0; p.blue = 65535; countBand++; }
+                else { p.classification = CLASS_OUTSIDE; countOutside++; }
+                if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
+                    updateProgress(50 + (i / points.length) * 45, `分類: ${i.toLocaleString()}/${points.length.toLocaleString()}点`);
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
+            addLog(`内側: ${countInside.toLocaleString()}点, 帯: ${countBand.toLocaleString()}点, 外側: ${countOutside.toLocaleString()}点`);
         } else {
             addLog('LASを全点読み込み中...');
             const arrayBuffer = await lazFile.arrayBuffer();
             points = readAllPointsFromLASBuffer(arrayBuffer, header);
             addLog(`読込: ${points.length.toLocaleString()}点`);
-        }
-
-        updateProgress(50, '3領域分類中');
-        const hasRGB = RGB_FORMATS.includes(header.pointFormat);
-        let countInside = 0, countBand = 0, countOutside = 0;
-        for (let i = 0; i < points.length; i++) {
-            const p = points[i];
-            if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
-            const inInner = innerMath.length >= 3 && pointInPolygon(p.x, p.y, innerMath);
-            const inOuter = outerMath.length >= 3 && pointInPolygon(p.x, p.y, outerMath);
-            if (inInner) {
-                p.classification = CLASS_INSIDE;
-                countInside++;
-            } else if (inOuter) {
-                p.classification = CLASS_BAND;
-                p.red = 65535;
-                p.green = 0;
-                p.blue = 65535;
-                countBand++;
-            } else {
-                p.classification = CLASS_OUTSIDE;
-                countOutside++;
+            updateProgress(50, '3領域分類中');
+            for (let i = 0; i < points.length; i++) {
+                const p = points[i];
+                if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
+                const inInner = innerMath.length >= 3 && pointInPolygon(p.x, p.y, innerMath);
+                const inOuter = outerMath.length >= 3 && pointInPolygon(p.x, p.y, outerMath);
+                if (inInner) { p.classification = CLASS_INSIDE; countInside++; }
+                else if (inOuter) { p.classification = CLASS_BAND; p.red = 65535; p.green = 0; p.blue = 65535; countBand++; }
+                else { p.classification = CLASS_OUTSIDE; countOutside++; }
+                if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
+                    updateProgress(50 + (i / points.length) * 45, `分類: ${i.toLocaleString()}/${points.length.toLocaleString()}点`);
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
             }
-            if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
-                const progress = 50 + (i / points.length) * 45;
-                updateProgress(progress, `分類: ${i.toLocaleString()}/${points.length.toLocaleString()}点`);
-                await new Promise(resolve => setTimeout(resolve, 0));
-            }
+            addLog(`内側: ${countInside.toLocaleString()}点, 帯: ${countBand.toLocaleString()}点, 外側: ${countOutside.toLocaleString()}点`);
         }
-        addLog(`内側: ${countInside.toLocaleString()}点, 帯: ${countBand.toLocaleString()}点, 外側: ${countOutside.toLocaleString()}点`);
 
         updateProgress(95, 'LAS出力生成中');
-        const outputLasBuffer = createLASFile(points, header);
+        const outputPointCount = outputLasBuffer != null ? header.numPoints : points.length;
+        const blob = outputLasBuffer != null && outputLasBuffer instanceof Blob
+            ? outputLasBuffer
+            : new Blob([createLASFile(points, header)], { type: 'application/octet-stream' });
         updateProgress(100, '完了');
 
-        const blob = new Blob([outputLasBuffer], { type: 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
         downloadBtn.href = url;
         downloadBtn.download = 'output_polygon.las';
         resultSection.classList.add('active');
         resultText.innerHTML = `
             ポリゴン境界（幅1cmライン描画）が完了しました。<br>
-            出力点数: ${points.length.toLocaleString()}点（内側: ${countInside.toLocaleString()}, 帯: ${countBand.toLocaleString()}, 外側: ${countOutside.toLocaleString()}）<br>
+            出力点数: ${outputPointCount.toLocaleString()}点（内側: ${countInside.toLocaleString()}, 帯: ${countBand.toLocaleString()}, 外側: ${countOutside.toLocaleString()}）<br>
             Classification: 1=内側, 2=帯, 3=外側。帯の点はマゼンタで幅1cmの線として表示されます。<br>
-            ファイルサイズ: ${formatFileSize(outputLasBuffer.byteLength)}
+            ファイルサイズ: ${formatFileSize(blob.size)}
         `;
         if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
         addLog('✅ ポリゴン境界（幅1cmライン描画）が完了しました。');
@@ -2381,13 +2488,7 @@ async function processTargetCorners() {
         addLog('ターゲット配置（四隅）を開始します...');
         updateProgress(0, '初期化中');
 
-        const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
-        const headerBuffer = await headerBlob.arrayBuffer();
-        const header = parseLASHeader(headerBuffer);
-        if (header.pointDataOffset > 375) {
-            const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
-            Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
-        }
+        const header = await readLASHeaderFromFile(lazFile);
         const { minX, maxX, minY, maxY, minZ, maxZ } = header;
         if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY) || !Number.isFinite(minZ)) {
             throw new Error('点群の範囲（min/max）がヘッダーから取得できません。');
@@ -2395,9 +2496,7 @@ async function processTargetCorners() {
         addLog(`点群範囲: X[${minX}, ${maxX}] Y[${minY}, ${maxY}] Z[${minZ}, ${maxZ}]`);
         updateProgress(10, '点群読込中');
 
-        const fileSizeMB = lazFile.size / (1024 * 1024);
-        const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
-        const chunkSizeMB = parseInt(chunkSizeInput?.value, 10) || DEFAULT_CHUNK_SIZE_MB;
+        const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
         let points = [];
 
         if (header.isCompressed) {
@@ -2511,7 +2610,7 @@ async function processFiles() {
         updateProgress(10, 'CSV読込完了');
         
         const radius = parseFloat(radiusInput.value);
-        const chunkSizeMB = parseInt(chunkSizeInput.value) || DEFAULT_CHUNK_SIZE_MB;
+        const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
         const useSphere = filterSphereInput ? filterSphereInput.checked : true;
         const useHorizontal = filterHorizontalInput ? filterHorizontalInput.checked : false;
         if (!useSphere && !useHorizontal) {
@@ -2524,35 +2623,14 @@ async function processFiles() {
         
         // フィルタリングキャッシュを準備（パフォーマンス向上）
         prepareFilteringCache(centers, radius, useSphere, useHorizontal);
-        
-        // ファイルサイズチェック
-        const fileSizeMB = lazFile.size / (1024 * 1024);
-        const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
-        
         if (useStreaming) {
             addLog(`📦 ストリーミング処理モード: ${fileSizeMB.toFixed(1)}MBのファイルをチャンクごとに処理します`);
         } else {
             addLog('LAZ/LASファイルを読み込んでいます...');
         }
         
-        // ヘッダーを先に読み込む（最初の375バイトで十分、VLRや拡張ヘッダーも含む）
         addLog('ヘッダーを読み込んでいます...');
-        const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
-        const headerBuffer = await headerBlob.arrayBuffer();
-        
-        // 一時的に全体バッファとして扱う（parseLASHeaderの互換性のため）
-        // 実際にはヘッダー部分だけを解析
-        const header = parseLASHeader(headerBuffer);
-        
-        // pointDataOffsetが取得できたので、必要に応じて全体のヘッダーを読み込む
-        // ただし、pointDataOffsetが375バイトを超える場合は、その分だけ追加で読み込む
-        if (header.pointDataOffset > 375) {
-            const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
-            const fullHeaderBuffer = await fullHeaderBlob.arrayBuffer();
-            // 再解析（VLR情報も含む）
-            Object.assign(header, parseLASHeader(fullHeaderBuffer));
-        }
-        
+        const header = await readLASHeaderFromFile(lazFile);
         addLog(`バージョン: LAS ${header.versionMajor}.${header.versionMinor}`);
         addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
         addLog(`ポイントフォーマット: ${header.pointFormat}`);
@@ -2570,7 +2648,6 @@ async function processFiles() {
             filteredPoints = await processLASStreaming(lazFile, header, centers, radius, chunkSizeMB, useSphere, useHorizontal);
             processedCount = header.numPoints;
         } else if (header.isCompressed) {
-            // LAZ圧縮ファイルの処理
             if (useStreaming) {
                 // ストリーミング解凍+フィルタリング（メモリ効率的）
                 addLog('LAZ圧縮ファイルをストリーミング解凍します...');

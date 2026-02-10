@@ -1,71 +1,67 @@
-# 実装計画: 3DDB COPC の Potree 可視化オプション
+# 実装計画: 中心抽出（CSV座標周辺）の効率化と共通化
 
-## 目的
+## 1. 中心抽出の効率化の仕組み（現状の実装）
 
-見つかった COPC 候補について「ダウンロード」に加え、**Potree で可視化する**オプションを追加する。  
-[potree-copc-viewer](https://github.com/Yoshida088603/potree-copc-viewer) を別タブで開き、選択した候補の COPC を表示する。
+中心抽出（単点CSV処理：CSV座標周辺の点を抽出）には、1GB超のファイルでも効率的に処理できる仕組みが備わっている。
 
----
+### 閾値とモード切り替え
 
-## 前提・参照
+- ファイルサイズが **300MB を超える**とストリーミングモードに切り替わる。
+- 参照: `app_github_pages.js` の `STREAMING_THRESHOLD_MB = 300`（約9行目）、`DEFAULT_CHUNK_SIZE_MB = 100`（約13行目）。
 
-- 公開ビューアURL: `https://Yoshida088603.github.io/potree-copc-viewer/`
-- クエリ `?r=` に「COPC の URL」または「reg_id」を渡すと、その COPC を読み込んで表示する（詳細は `docs/POTREE_COPC_VIEWER_ANALYSIS.md`）
+### 非圧縮LAS（300MB超）
 
----
+- ヘッダーだけ先に読み、点データは `file.slice(currentOffset, currentOffset + chunkSize)` で**チャンク単位**（デフォルト100MB）に読み込む。
+- 各チャンクをパースし、中心距離でフィルタし、**マッチした点だけ** `filteredPoints` に追加する。
+- 常に「ヘッダー + 1チャンク分」程度のメモリしか持たないため、1GB超のLASでもメモリ効率が良い。
+- 実装: `processLASStreaming(lazFile, header, centers, radius, ...)`（約1416行目）。
 
-## 実装タスク
+### 圧縮LAZ（300MB超）
 
-### 1. UI 追加
+- 解凍は **1点ずつ** `laszip.getPoint(pointPtr)` で行い、その場でフィルタし、マッチした点だけ `filteredPoints` に追加する。
+- 解凍済みの全点を一度にメモリに載せない（**ストリーミング解凍**）。
+- 実装: `decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, radius, ...)`（約1194行目）。
+- 注意: 入力の圧縮ファイルは `lazFile.arrayBuffer()` で全体を読み込むため、1GB超LAZではその分のメモリは必要。
 
-| 項目 | 内容 |
-|------|------|
-| 対象 | COPC 候補リスト表示エリア（`#copcCandidateList` 付近） |
-| 追加要素 | 「Potreeで表示」ボタン 1 つ（候補選択後に有効） |
-| 配置 | 「LAZダウンロード」ボタンと横並び、または候補リスト直下 |
+### 300MB以下
 
-### 2. クリック時の挙動
-
-| 条件 | 処理 |
-|------|------|
-| 選択候補が **COPC/LAZ の URL**（`external_link` が .copc.laz / .laz） | その URL を `encodeURIComponent` し、`potreeViewerBase + '?r=' + url` を `window.open(..., '_blank')` で開く |
-| 選択候補が **ZIP のみ**（`isZip: true`） | reg_id から `https://gsvrg.ipri.aist.go.jp/3ddb-pds/copc/{reg_id}.copc.laz` を組み立て、同様に `?r=` で開く（同一ホストに COPC がある場合のフォールバック） |
-| 未選択・候補なし | ボタンは disabled のまま。クリック不可。 |
-
-### 3. 定数・設定
-
-| 項目 | 内容 |
-|------|------|
-| Potree ビューアベースURL | 定数で保持（例: `POTREE_COPC_VIEWER_BASE = 'https://Yoshida088603.github.io/potree-copc-viewer/'`） |
-| 変更可能性 | 将来的に設定で差し替え可能にしてもよい（今回は定数で十分） |
-
-### 4. エラー・案内
-
-| 状況 | 対応 |
-|------|------|
-| 候補未選択で押した場合 | 既存と同様「候補を選択してから〜」とメッセージ表示 |
-| ZIP のみで 3ddb-pds に COPC が無い場合 | ビューア側で読み込み失敗となる。本アプリでは「Potreeで表示は COPC 形式のデータに対応しています」などの短い説明を UI に表示してもよい |
+- 従来どおりファイル全体を読み込み、解凍またはパース後に `filterPointsBatchFast` でバッチフィルタ。
+- 小さいファイル向けのシンプルな経路。
 
 ---
 
-## 変更するファイル
+## 2. 他機能との比較（ポリゴンSIMA・ターゲット配置など）
 
-| ファイル | 変更内容 |
-|----------|----------|
-| `index.html` | 「Potreeで表示」ボタン（`id="copcPotreeBtn"` など）を追加 |
-| `app_github_pages.js` | 定数 `POTREE_COPC_VIEWER_BASE`、Potree ボタンの `click` ハンドラ、候補表示時にボタン有効化 |
+| 機能 | 非圧縮LAS（300MB超） | 圧縮LAZ |
+|------|----------------------|---------|
+| 中心抽出 | チャンク読込 + マッチした点のみ保持 | ストリーミング解凍 + マッチした点のみ保持 |
+| ポリゴン境界・ターゲット配置 | 同じチャンク読込（`processLASStreamingAllPoints`）で全点を蓄積 | 一括解凍 → 全点読み（ストリーミング解凍は未使用） |
 
----
-
-## 完了条件
-
-- 候補を 1 件選択した状態で「Potreeで表示」をクリックすると、potree-copc-viewer が別タブで開き、その COPC が表示されること
-- ZIP のみの候補でも、reg_id から 3ddb-pds の COPC URL を組み立てて開くこと（開けない場合はビューア側の表示で十分）
-- 候補 0 件または未選択時は「Potreeで表示」が押せないこと
+- **非圧縮LAS**: ポリゴン・ターゲットでも300MB超の場合はチャンク読込を使用しており、読込は効率的。
+- **圧縮LAZ**: ポリゴン・ターゲットでは「一括解凍 → 全点読み」のみ。中心抽出で使っているストリーミング解凍を共通化すると、大容量LAZでもメモリ効率を改善できる余地がある。
 
 ---
 
-## 備考
+## 3. 今後の共通化候補
 
-- 既存の「LAZダウンロード」はそのまま維持する
-- 複数候補をまとめて Potree で開く（`?r=url1,url2`）は、今回のスコープ外とする（必要なら後で追加）
+### ストリーミング解凍の共通化
+
+- 解凍ループを1本にし、コールバック（例: `onPoint(point)`）で振る舞いを分ける。
+  - 中心抽出: フィルタ条件を満たすときだけ push。
+  - ポリゴン・ターゲット: 全点 push。
+- ポリゴン・ターゲットでも解凍済みバッファを廃止し、メモリ効率を改善できる。
+
+### ヘッダー読み込みの共通化
+
+- `readLASHeaderFromFile(lazFile)` のような共通関数を1つ用意する。
+- 立面図・縦断横断・ポリゴン・ターゲット・中心抽出の5箇所で利用し、修正・拡張を一括化する。
+
+### 「LAZ/LAS を全点読み」の共通化
+
+- ポリゴン・ターゲットで使う「全点が欲しい」経路を、`loadLAZAsPoints` / `loadLASAsPoints` のような共通関数にまとめる。
+- ストリーミング解凍を共通化する際の受け口にもできる。
+
+### その他
+
+- `getStreamingOptions(lazFile)` で `fileSizeMB`, `useStreaming`, `chunkSizeMB` を返すヘルパーで、各処理の先頭の重複を削減できる。
+- 未使用の `filterPointsBatch`（約1086行目）は、`filterPointsBatchFast` のみ使用のため整理または削除の検討余地あり。
