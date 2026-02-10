@@ -2390,12 +2390,6 @@ async function processPolygonBoundary() {
             const hasRGB = RGB_FORMATS.includes(header.pointFormat);
             const pointRecordLength = hasRGB ? 26 : 20;
             const pointFormat = hasRGB ? 2 : 0;
-            const minX = Number.isFinite(header.minX) ? header.minX : 0;
-            const maxX = Number.isFinite(header.maxX) ? header.maxX : 0;
-            const minY = Number.isFinite(header.minY) ? header.minY : 0;
-            const maxY = Number.isFinite(header.maxY) ? header.maxY : 0;
-            const minZ = Number.isFinite(header.minZ) ? header.minZ : 0;
-            const maxZ = Number.isFinite(header.maxZ) ? header.maxZ : 0;
 
             const chunkBytes = Math.floor(POLYGON_STREAM_CHUNK_BYTES / pointRecordLength) * pointRecordLength;
             const pointChunks = [];
@@ -2403,13 +2397,26 @@ async function processPolygonBoundary() {
             let currentView = new DataView(currentChunk);
             let offsetInChunk = 0;
             let firstPoint = null;
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
 
             await decompressLAZStreaming(arrayBuffer, header, (p, i) => {
                 const cls = classifyPointForPolygon(p, innerMath, outerMath, outerBBox);
                 if (cls === 'inside') countInside++;
                 else if (cls === 'band') countBand++;
                 else countOutside++;
-                if (i === 0) firstPoint = p;
+                if (i === 0) {
+                    firstPoint = { x: p.x, y: p.y, z: p.z };
+                    minX = maxX = p.x;
+                    minY = maxY = p.y;
+                    minZ = maxZ = p.z;
+                } else {
+                    if (p.x < minX) minX = p.x;
+                    if (p.x > maxX) maxX = p.x;
+                    if (p.y < minY) minY = p.y;
+                    if (p.y > maxY) maxY = p.y;
+                    if (p.z < minZ) minZ = p.z;
+                    if (p.z > maxZ) maxZ = p.z;
+                }
                 const originX = firstPoint.x;
                 const originY = firstPoint.y;
                 const originZ = firstPoint.z;
@@ -2431,6 +2438,14 @@ async function processPolygonBoundary() {
                 }
             });
             if (offsetInChunk > 0) pointChunks.push(currentChunk.slice(0, offsetInChunk));
+            if (!Number.isFinite(minX)) {
+                minX = Number.isFinite(header.minX) ? header.minX : 0;
+                maxX = Number.isFinite(header.maxX) ? header.maxX : 0;
+                minY = Number.isFinite(header.minY) ? header.minY : 0;
+                maxY = Number.isFinite(header.maxY) ? header.maxY : 0;
+                minZ = Number.isFinite(header.minZ) ? header.minZ : 0;
+                maxZ = Number.isFinite(header.maxZ) ? header.maxZ : 0;
+            }
             const headerBuf = new ArrayBuffer(LAS_HEADER_SIZE);
             const headerView = new DataView(headerBuf);
             buildLASHeaderForStreamedOutput(headerView, header.numPoints, pointFormat, pointRecordLength, firstPoint, minX, maxX, minY, maxY, minZ, maxZ);

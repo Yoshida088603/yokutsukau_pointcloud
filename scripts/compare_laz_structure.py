@@ -63,16 +63,20 @@ def main():
     args = ap.parse_args()
 
     paths = [args.laz_a, args.laz_b]
-    labels = ["A (正常側)", "B (異常側)"]
-    # 09LD0841.laz = 異常側、HAKUSAN_maetate.laz = 正常側でラベルを付ける
+    labels = ["A (1つ目)", "B (2つ目)"]
     for i, p in enumerate(paths):
-        if "09LD0841" in p:
+        name = Path(p).name.lower()
+        if "good" in name:
+            labels[i] = Path(p).name + " (表示できる)"
+        elif "trouble" in name:
+            labels[i] = Path(p).name + " (表示できない)"
+        elif "09LD0841" in p:
             labels[i] = Path(p).name + " (異常・処理がおかしい)"
         elif "HAKUSAN" in p or "20260206" in p:
             labels[i] = Path(p).name + " (正常)"
 
     print("=" * 70)
-    print("LAZ 構造比較")
+    print("LAS/LAZ 構造比較")
     print("=" * 70)
 
     infos = []
