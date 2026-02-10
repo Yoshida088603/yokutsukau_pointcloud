@@ -809,6 +809,56 @@ function pointInPolygon(px, py, polygon) {
     return inside;
 }
 
+/** 多角形 [[x,y],...] の軸平行バウンディングボックスを返す。空の場合は null。 */
+function getPolygonBBox(polygon) {
+    if (!polygon || polygon.length < 3) return null;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const [x, y] of polygon) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    return { minX, maxX, minY, maxY };
+}
+
+/** 点オブジェクトに red/green/blue が無い場合に 0 をセットする（LAS出力用）。 */
+function ensurePointRGB(p) {
+    if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
+}
+
+/**
+ * ポリゴン境界用: 1点を内側/帯/外側に分類し、p に classification と帯の色を設定する。
+ * @param {{x,y,z,intensity?,red?,green?,blue?}} p - 点（破壊的に更新）
+ * @param {number[][]} innerMath - 内側オフセットポリゴン（数学座標系）
+ * @param {number[][]} outerMath - 外側オフセットポリゴン（数学座標系）
+ * @param {{minX,maxX,minY,maxY}|null} [outerBBox] - 外側ポリゴンのAABB。渡すと外側の点を早期に除外して高速化
+ * @returns {'inside'|'band'|'outside'}
+ */
+function classifyPointForPolygon(p, innerMath, outerMath, outerBBox = null) {
+    ensurePointRGB(p);
+    const px = p.x, py = p.y;
+    if (outerBBox && (px < outerBBox.minX || px > outerBBox.maxX || py < outerBBox.minY || py > outerBBox.maxY)) {
+        p.classification = CLASS_OUTSIDE;
+        return 'outside';
+    }
+    const inInner = innerMath.length >= 3 && pointInPolygon(px, py, innerMath);
+    const inOuter = outerMath.length >= 3 && pointInPolygon(px, py, outerMath);
+    if (inInner) {
+        p.classification = CLASS_INSIDE;
+        return 'inside';
+    }
+    if (inOuter) {
+        p.classification = CLASS_BAND;
+        p.red = 65535;
+        p.green = 0;
+        p.blue = 65535;
+        return 'band';
+    }
+    p.classification = CLASS_OUTSIDE;
+    return 'outside';
+}
+
 // ============================================================================
 // 立面図作成（境界基準の座標系変換：剛体回転＋平行移動、Z不変）
 // ============================================================================
@@ -1221,7 +1271,7 @@ function logAndWarnDistanceToExtent(header, xA, yA, xB, yB, warnThresholdM = 50)
  * @param {ArrayBuffer} arrayBuffer - LAZ圧縮データ
  * @param {Object} header - parseLASHeader の戻り値
  * @param {(point: {x,y,z,intensity,red?,green?,blue?}, pointIndex: number) => void} onPoint - 解凍した1点ごとに呼ばれる（第2引数は0始まりの通し番号）
- * @param {{ onProgress?: (i: number, total: number) => void }} [opts] - 進捗コールバックなど
+ * @param {{ onProgress?: (i: number, total: number) => void, progressInterval?: number }} [opts] - 進捗コールバックなど。progressInterval を渡すと yield/進捗の間隔（点）を上書き（ポリゴンなど大量点向けに大きくすると処理が速くなる）
  */
 async function decompressLAZStreaming(arrayBuffer, header, onPoint, opts = {}) {
     const fileSize = arrayBuffer.byteLength;
@@ -1240,6 +1290,10 @@ async function decompressLAZStreaming(arrayBuffer, header, onPoint, opts = {}) {
     const rgbOffset = getRgbByteOffset(header.pointFormat);
     const view = new DataView(pointHeap.buffer, pointHeap.byteOffset, pointRecordLength);
     const onProgress = opts.onProgress;
+    const progressInterval = opts.progressInterval ?? PROGRESS_UPDATE_INTERVAL;
+
+    const point = { x: 0, y: 0, z: 0, intensity: 0 };
+    if (hasRGB) point.red = point.green = point.blue = 0;
 
     try {
         for (let i = 0; i < pointCount; i++) {
@@ -1247,20 +1301,19 @@ async function decompressLAZStreaming(arrayBuffer, header, onPoint, opts = {}) {
             const rawX = view.getInt32(0, true);
             const rawY = view.getInt32(4, true);
             const rawZ = view.getInt32(8, true);
-            const intensity = view.getUint16(12, true);
-            const x = rawX * header.scaleX + header.offsetX;
-            const y = rawY * header.scaleY + header.offsetY;
-            const z = rawZ * header.scaleZ + header.offsetZ;
-            const point = { x, y, z, intensity };
+            point.x = rawX * header.scaleX + header.offsetX;
+            point.y = rawY * header.scaleY + header.offsetY;
+            point.z = rawZ * header.scaleZ + header.offsetZ;
+            point.intensity = view.getUint16(12, true);
             if (hasRGB && rgbOffset >= 0 && pointRecordLength >= rgbOffset + 6) {
                 point.red = view.getUint16(rgbOffset, true);
                 point.green = view.getUint16(rgbOffset + 2, true);
                 point.blue = view.getUint16(rgbOffset + 4, true);
             }
             onPoint(point, i);
-            if (onProgress && i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
+            if (onProgress && i % progressInterval === 0 && i > 0) {
                 onProgress(i, pointCount);
-                if (i % (PROGRESS_UPDATE_INTERVAL * 2) === 0) {
+                if (i % (progressInterval * 2) === 0) {
                     await new Promise(resolve => setTimeout(resolve, 0));
                 }
             }
@@ -1286,7 +1339,7 @@ async function decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, r
     try {
         await decompressLAZStreaming(arrayBuffer, header, (point) => {
             if (isPointNearCenters(point.x, point.y, point.z)) {
-                filteredPoints.push(point);
+                filteredPoints.push({ x: point.x, y: point.y, z: point.z, intensity: point.intensity, red: point.red, green: point.green, blue: point.blue });
             }
         }, {
             onProgress(i, pointCount) {
@@ -1317,7 +1370,9 @@ async function loadLAZAsPointsStreaming(arrayBuffer, header) {
     const points = [];
     addLog('LAZをストリーミング解凍して全点読み込み中...');
     updateProgress(25, 'LAZ解凍中');
-    await decompressLAZStreaming(arrayBuffer, header, (point) => points.push(point), {
+    await decompressLAZStreaming(arrayBuffer, header, (point) => {
+        points.push({ x: point.x, y: point.y, z: point.z, intensity: point.intensity, red: point.red, green: point.green, blue: point.blue });
+    }, {
         onProgress(i, pointCount) {
             const progress = 25 + (i / pointCount) * 65;
             updateProgress(progress, `LAZ解凍: ${Math.floor((i / pointCount) * 100)}%`);
@@ -2092,9 +2147,7 @@ async function processBoundaryTransform() {
             transformPointsBoundary(points, xA, yA, ux, uy, vx, vy);
         }
 
-        for (const p of points) {
-            if (!p.hasOwnProperty('red')) { p.red = 0; p.green = 0; p.blue = 0; }
-        }
+        for (const p of points) ensurePointRGB(p);
         const scaleYInput = parseFloat(document.getElementById('scaleY')?.value);
         const scaleYVal = (Number.isFinite(scaleYInput) && scaleYInput > 0) ? scaleYInput : 1;
         if (scaleYVal !== 1) {
@@ -2240,9 +2293,7 @@ async function processSectionMode() {
         }
 
         // 出力はRGB付きに揃える（スフィアを確実に発色）
-        for (const p of outPoints) {
-            if (!p.hasOwnProperty('red')) { p.red = 0; p.green = 0; p.blue = 0; }
-        }
+        for (const p of outPoints) ensurePointRGB(p);
 
         const scaleYInput = parseFloat(document.getElementById('scaleY')?.value);
         const scaleYVal = (Number.isFinite(scaleYInput) && scaleYInput > 0) ? scaleYInput : 1;
@@ -2324,6 +2375,7 @@ async function processPolygonBoundary() {
 
         const innerMath = simaToMathPolygon(innerPoly);
         const outerMath = simaToMathPolygon(outerPoly);
+        const outerBBox = getPolygonBBox(outerMath);
         updateProgress(5, '前段完了');
 
         addLog(`点群: ${header.numPoints.toLocaleString()}点`);
@@ -2353,22 +2405,10 @@ async function processPolygonBoundary() {
             let firstPoint = null;
 
             await decompressLAZStreaming(arrayBuffer, header, (p, i) => {
-                if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
-                const inInner = innerMath.length >= 3 && pointInPolygon(p.x, p.y, innerMath);
-                const inOuter = outerMath.length >= 3 && pointInPolygon(p.x, p.y, outerMath);
-                if (inInner) {
-                    p.classification = CLASS_INSIDE;
-                    countInside++;
-                } else if (inOuter) {
-                    p.classification = CLASS_BAND;
-                    p.red = 65535;
-                    p.green = 0;
-                    p.blue = 65535;
-                    countBand++;
-                } else {
-                    p.classification = CLASS_OUTSIDE;
-                    countOutside++;
-                }
+                const cls = classifyPointForPolygon(p, innerMath, outerMath, outerBBox);
+                if (cls === 'inside') countInside++;
+                else if (cls === 'band') countBand++;
+                else countOutside++;
                 if (i === 0) firstPoint = p;
                 const originX = firstPoint.x;
                 const originY = firstPoint.y;
@@ -2398,39 +2438,23 @@ async function processPolygonBoundary() {
             header.isCompressed = false;
             addLog(`読込: ${header.numPoints.toLocaleString()}点`);
             addLog(`内側: ${countInside.toLocaleString()}点, 帯: ${countBand.toLocaleString()}点, 外側: ${countOutside.toLocaleString()}点`);
-        } else if (useStreaming) {
-            addLog('非圧縮LASをストリーミングで全点読み込み中...');
-            points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
-            updateProgress(50, '3領域分類中');
-            const hasRGB = RGB_FORMATS.includes(header.pointFormat);
-            for (let i = 0; i < points.length; i++) {
-                const p = points[i];
-                if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
-                const inInner = innerMath.length >= 3 && pointInPolygon(p.x, p.y, innerMath);
-                const inOuter = outerMath.length >= 3 && pointInPolygon(p.x, p.y, outerMath);
-                if (inInner) { p.classification = CLASS_INSIDE; countInside++; }
-                else if (inOuter) { p.classification = CLASS_BAND; p.red = 65535; p.green = 0; p.blue = 65535; countBand++; }
-                else { p.classification = CLASS_OUTSIDE; countOutside++; }
-                if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
-                    updateProgress(50 + (i / points.length) * 45, `分類: ${i.toLocaleString()}/${points.length.toLocaleString()}点`);
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                }
-            }
-            addLog(`内側: ${countInside.toLocaleString()}点, 帯: ${countBand.toLocaleString()}点, 外側: ${countOutside.toLocaleString()}点`);
         } else {
-            addLog('LASを全点読み込み中...');
-            const arrayBuffer = await lazFile.arrayBuffer();
-            points = readAllPointsFromLASBuffer(arrayBuffer, header);
+            if (useStreaming) {
+                addLog('非圧縮LASをストリーミングで全点読み込み中...');
+                points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
+            } else {
+                addLog('LASを全点読み込み中...');
+                const arrayBuffer = await lazFile.arrayBuffer();
+                points = readAllPointsFromLASBuffer(arrayBuffer, header);
+            }
             addLog(`読込: ${points.length.toLocaleString()}点`);
             updateProgress(50, '3領域分類中');
             for (let i = 0; i < points.length; i++) {
                 const p = points[i];
-                if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
-                const inInner = innerMath.length >= 3 && pointInPolygon(p.x, p.y, innerMath);
-                const inOuter = outerMath.length >= 3 && pointInPolygon(p.x, p.y, outerMath);
-                if (inInner) { p.classification = CLASS_INSIDE; countInside++; }
-                else if (inOuter) { p.classification = CLASS_BAND; p.red = 65535; p.green = 0; p.blue = 65535; countBand++; }
-                else { p.classification = CLASS_OUTSIDE; countOutside++; }
+                const cls = classifyPointForPolygon(p, innerMath, outerMath, outerBBox);
+                if (cls === 'inside') countInside++;
+                else if (cls === 'band') countBand++;
+                else countOutside++;
                 if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
                     updateProgress(50 + (i / points.length) * 45, `分類: ${i.toLocaleString()}/${points.length.toLocaleString()}点`);
                     await new Promise(resolve => setTimeout(resolve, 0));
@@ -2540,9 +2564,7 @@ async function processTargetCorners() {
         }
         addLog(`ターゲット追加: 四隅×${targetSizeM}m、合計+${totalTargetPoints}点`);
 
-        for (const p of points) {
-            if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
-        }
+        for (const p of points) ensurePointRGB(p);
 
         updateProgress(95, 'LAS出力生成中');
         const outputLasBuffer = createLASFile(points, header);
@@ -2611,8 +2633,8 @@ async function processFiles() {
         
         const radius = parseFloat(radiusInput.value);
         const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
-        const useSphere = filterSphereInput ? filterSphereInput.checked : true;
-        const useHorizontal = filterHorizontalInput ? filterHorizontalInput.checked : false;
+        const useSphere = filterSphereInput ? filterSphereInput.checked : false;
+        const useHorizontal = filterHorizontalInput ? filterHorizontalInput.checked : true;
         if (!useSphere && !useHorizontal) {
             throw new Error('フィルタ種別を1つ以上選択してください（スフィアまたは水平投影）');
         }
