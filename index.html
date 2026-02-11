@@ -444,9 +444,19 @@
                     <div id="sectionPairsGrid" style="display: grid; grid-template-columns: auto 1fr 1fr; gap: 8px 12px; align-items: center;"></div>
                 </div>
                 <div class="setting-item" style="margin-top: 12px;">
-                    <label for="clipWidth">切抜幅（±, m）</label>
+                    <label for="clipWidth">切抜幅 t（±, m）</label>
                     <input type="number" id="clipWidth" value="0.01" min="0" step="any">
-                    <small style="color: #666; font-size: 12px;">AB直線（無限長）に対する横方向距離 |Y'| がこの値以内の点だけを残します（デフォルト: ±0.01m）。</small>
+                    <small style="color: #666; font-size: 12px;">AB直線に対する横方向距離 |Y'| ≤ t の点を残します（デフォルト: ±0.01m）。</small>
+                </div>
+                <div class="setting-item" style="margin-top: 8px;">
+                    <label for="clipWidthW">切抜幅 w（奥行き, m）</label>
+                    <input type="number" id="clipWidthW" value="0" min="0" step="any">
+                    <small style="color: #666; font-size: 12px;">AB中点から境界方向に±w/2の範囲で切り抜きます。例: w=10 → ±5m。0のときは制限なし。</small>
+                </div>
+                <div class="setting-item" style="margin-top: 8px;">
+                    <label for="clipWidthT">切抜幅 T（ラージT, m）</label>
+                    <input type="number" id="clipWidthT" value="0" min="0" step="any">
+                    <small style="color: #666; font-size: 12px;">0のときはクラス分けなし。T&gt;0のときは幅Tの帯（|Y'|≤T/2）を出力し、中心tをクラス1、その外側をクラス2に分類します。例: t=0.1, T=2 → 2m幅の中心0.1mがクラス1。</small>
                 </div>
                 <div class="setting-item" style="margin-top: 12px;">
                     <label for="sectionPairsFile">複数組み合わせ用CSVで一括指定（任意）</label>

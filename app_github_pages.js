@@ -160,8 +160,8 @@ lazInput.addEventListener('change', (e) => {
     if (lazFile) {
         lazLabel.classList.add('has-file');
         lazInfo.textContent = `${lazFile.name} (${formatFileSize(lazFile.size)})`;
-        updateModeFromFiles();
     }
+    checkFiles();
 });
 
 csvInput.addEventListener('change', (e) => {
@@ -169,10 +169,10 @@ csvInput.addEventListener('change', (e) => {
     if (csvFile) {
         csvLabel.classList.add('has-file');
         csvInfo.textContent = `${csvFile.name} (${formatFileSize(csvFile.size)})`;
-        updateModeFromFiles();
         const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
         if (mode === 'section' && typeof fillSectionCsvDropdowns === 'function') fillSectionCsvDropdowns();
     }
+    checkFiles();
 });
 
 if (simInput) {
@@ -181,7 +181,6 @@ if (simInput) {
         if (simFile) {
             if (simLabel) simLabel.classList.add('has-file');
             if (simInfo) simInfo.textContent = `${simFile.name} (${formatFileSize(simFile.size)})`;
-            updateModeFromFiles();
         }
         checkFiles();
     });
@@ -564,29 +563,15 @@ function checkFiles() {
 }
 
 /**
- * 現在セットされているファイル（lazFile, csvFile, simFile）に応じて処理モードのラジオを動的に選択する。
- * 優先: 点群+SIM → ポリゴン境界, 点群+CSV → 中心抽出, 点群のみ → 立面図。最後に checkFiles() を呼ぶ。
+ * ファイル変更時に実行。処理モードの動的選択は一旦停止しており、ラジオはユーザー選択のまま。
+ * 実行ボタンの有効/無効だけ checkFiles() で更新する。
  */
 function updateModeFromFiles() {
-    const radioCenter = document.getElementById('processModeCenter');
-    const radioBoundary = document.getElementById('processModeBoundary');
-    const radioPolygon = document.getElementById('processModePolygon');
-    if (!radioCenter || !radioBoundary || !radioPolygon) return;
-    if (lazFile && simFile) {
-        radioPolygon.checked = true;
-        radioPolygon.dispatchEvent(new Event('change', { bubbles: true }));
-    } else if (lazFile && csvFile) {
-        radioCenter.checked = true;
-        radioCenter.dispatchEvent(new Event('change', { bubbles: true }));
-    } else if (lazFile) {
-        radioBoundary.checked = true;
-        radioBoundary.dispatchEvent(new Event('change', { bubbles: true }));
-    }
     checkFiles();
 }
 
 /**
- * ドロップされた FileList を種類ごとに振り分け、lazFile/csvFile/simFile とラベルを更新して updateModeFromFiles を呼ぶ。
+ * ドロップされた FileList を種類ごとに振り分け、lazFile/csvFile/simFile とラベルを更新して checkFiles() のみ呼ぶ（処理モードは変更しない）。
  */
 function applyFilesFromDrop(files) {
     if (!files || !files.length) return;
@@ -608,7 +593,7 @@ function applyFilesFromDrop(files) {
             if (simInfo) simInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
         }
     }
-    updateModeFromFiles();
+    checkFiles();
 }
 
 function formatFileSize(bytes) {
@@ -1132,18 +1117,32 @@ function signedDistanceToABLine(x, y, xA, yA, vx, vy) {
     return rx * vx + ry * vy;
 }
 
+/** 縦断・横断のクラス分け: 中心帯（|Y'|≤t）→1、外側帯（t<|Y'|≤T/2）→2 */
+const CLASS_SECTION_CENTER = 1;
+const CLASS_SECTION_BAND = 2;
+
 /**
  * 1点を縦断図座標へ変換（XY平面=縦断図: X=境界方向, Y=標高, Z=奥行）しつつ、切抜幅で判定
- * @param {number} halfWidth - |Y'| <= halfWidth の点のみ採用
- * @returns {{x:number,y:number,z:number}|null}
+ * @param {number} halfWidth - 横方向 t。|Y'| <= halfWidth で採用（clipT=0時）。clipT>0時は中心帯の境界
+ * @param {number} [halfWidthAlong=0] - 0でなければ |X'-L/2| <= halfWidthAlong の点のみ（奥行き w/2）
+ * @param {number} [segmentLength=0] - AB線分の長さ L（halfWidthAlong とセットで使用）
+ * @param {number} [clipT=0] - 0でなければ幅Tの帯（|Y'|≤T/2）を採用し、|Y'|≤t→クラス1、t<|Y'|≤T/2→クラス2
+ * @returns {{x:number,y:number,z:number,classification?:number}|null}
  */
-function clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth) {
+function clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth, halfWidthAlong = 0, segmentLength = 0, clipT = 0) {
     const rx = x - xA;
     const ry = y - yA;
     const xp = rx * ux + ry * uy;
     const yp = rx * vx + ry * vy;
-    if (Math.abs(yp) > halfWidth) return null;
-    return { x: xp, y: z, z: yp };
+    const halfOuter = (clipT > 0) ? clipT / 2 : halfWidth;
+    if (Math.abs(yp) > halfOuter) return null;
+    if (halfWidthAlong > 0 && segmentLength > 0) {
+        const xpMid = segmentLength / 2;
+        if (Math.abs(xp - xpMid) > halfWidthAlong) return null;
+    }
+    const out = { x: xp, y: z, z: yp };
+    if (clipT > 0) out.classification = Math.abs(yp) <= halfWidth ? CLASS_SECTION_CENTER : CLASS_SECTION_BAND;
+    return out;
 }
 
 /** 黄金比（Fibonacci球面配置用） */
@@ -1874,7 +1873,7 @@ async function processLASStreamingAllPoints(file, header, chunkSizeMB = DEFAULT_
  * 非圧縮LASをストリーミングで「切抜幅」適用しつつ縦断図座標へ変換
  * 返す点は既に (X=境界方向, Y=標高, Z=奥行) に変換済み
  */
-async function processLASStreamingClipAndTransform(file, header, xA, yA, ux, uy, vx, vy, halfWidth, chunkSizeMB = DEFAULT_CHUNK_SIZE_MB) {
+async function processLASStreamingClipAndTransform(file, header, xA, yA, ux, uy, vx, vy, halfWidth, halfWidthAlong = 0, segmentLength = 0, clipT = 0, chunkSizeMB = DEFAULT_CHUNK_SIZE_MB) {
     const outPoints = [];
     const pointRecordLength = header.pointRecordLength;
     const pointDataOffset = header.pointDataOffset;
@@ -1904,9 +1903,10 @@ async function processLASStreamingClipAndTransform(file, header, xA, yA, ux, uy,
             const y = rawY * header.scaleY + header.offsetY;
             const z = rawZ * header.scaleZ + header.offsetZ;
 
-            const t = clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth);
+            const t = clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth, halfWidthAlong, segmentLength, clipT);
             if (t) {
                 const p = { x: t.x, y: t.y, z: t.z, intensity: view.getUint16(chunkOffset + 12, true) };
+                if (t.classification !== undefined) p.classification = t.classification;
                 if (hasRGB && rgbOff >= 0 && chunkOffset + rgbOff + 6 <= chunkBuffer.byteLength) {
                     p.red = view.getUint16(chunkOffset + rgbOff, true);
                     p.green = view.getUint16(chunkOffset + rgbOff + 2, true);
@@ -1933,7 +1933,7 @@ async function processLASStreamingClipAndTransform(file, header, xA, yA, ux, uy,
 /**
  * LAZを解凍しつつ「切抜幅」適用し、縦断図座標へ変換（ポイント単位）
  */
-async function decompressLAZClipAndTransform(arrayBuffer, header, xA, yA, ux, uy, vx, vy, halfWidth) {
+async function decompressLAZClipAndTransform(arrayBuffer, header, xA, yA, ux, uy, vx, vy, halfWidth, halfWidthAlong = 0, segmentLength = 0, clipT = 0) {
     addLog('LAZを解凍し、切抜幅を適用して縦断図座標へ変換しています...');
     updateProgress(25, 'LAZ解凍+切抜+変換中');
     const outPoints = [];
@@ -1966,9 +1966,10 @@ async function decompressLAZClipAndTransform(arrayBuffer, header, xA, yA, ux, uy
         const y = rawY * header.scaleY + header.offsetY;
         const z = rawZ * header.scaleZ + header.offsetZ;
 
-        const t = clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth);
+        const t = clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth, halfWidthAlong, segmentLength, clipT);
         if (t) {
             const p = { x: t.x, y: t.y, z: t.z, intensity: view.getUint16(12, true) };
+            if (t.classification !== undefined) p.classification = t.classification;
             if (hasRGB && rgbOffset >= 0 && pointRecordLength >= rgbOffset + 6) {
                 p.red = view.getUint16(rgbOffset, true);
                 p.green = view.getUint16(rgbOffset + 2, true);
@@ -2741,28 +2742,31 @@ function parseSectionPairsCsv(text) {
  * @returns {Promise<Blob>}
  */
 async function runOneSectionPair(header, lazFile, mA, nA, zA, mB, nB, zB, opts) {
-    const { aLeftBRight, halfWidth, scaleYVal, useTargetMarker, targetHalf, chunkSizeMB } = opts;
+    const { aLeftBRight, halfWidth, halfWidthAlong = 0, clipT = 0, scaleYVal, useTargetMarker, targetHalf, chunkSizeMB } = opts;
     const axes = computeBoundaryAxes(mA, nA, mB, nB, aLeftBRight);
     if (!axes) throw new Error('点Aと点Bが同一です。');
     const { ux, uy, vx, vy } = axes;
+    const segmentLength = Math.sqrt((mB - mA) ** 2 + (nB - nA) ** 2);
     const SPHERE_RADIUS = 0.01;
     const SPHERE_POINTS = 50;
     let markerPointsA, markerPointsB;
+    // 縦断・横断ではターゲット（スフィア・白黒）の鉛直位置を 0.00m に固定
+    const markerZ = 0;
     if (useTargetMarker) {
-        markerPointsA = generateCheckerboardTargetFacingProfile(mA, nA, zA, targetHalf, ux, uy, vx, vy);
-        markerPointsB = generateCheckerboardTargetFacingProfile(mB, nB, zB, targetHalf, ux, uy, vx, vy);
+        markerPointsA = generateCheckerboardTargetFacingProfile(mA, nA, markerZ, targetHalf, ux, uy, vx, vy);
+        markerPointsB = generateCheckerboardTargetFacingProfile(mB, nB, markerZ, targetHalf, ux, uy, vx, vy);
     } else {
-        markerPointsA = generateSpherePointCloud(mA, nA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
-        markerPointsB = generateSpherePointCloud(mB, nB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
+        markerPointsA = generateSpherePointCloud(mA, nA, markerZ, SPHERE_RADIUS, SPHERE_POINTS, true);
+        markerPointsB = generateSpherePointCloud(mB, nB, markerZ, SPHERE_RADIUS, SPHERE_POINTS, true);
     }
     let outPoints = [];
     if (header.isCompressed) {
         const arrayBuffer = await lazFile.arrayBuffer();
-        outPoints = await decompressLAZClipAndTransform(arrayBuffer, header, mA, nA, ux, uy, vx, vy, halfWidth);
+        outPoints = await decompressLAZClipAndTransform(arrayBuffer, header, mA, nA, ux, uy, vx, vy, halfWidth, halfWidthAlong, segmentLength, clipT);
     } else {
         const { useStreaming, chunkSizeMB: cs } = getStreamingOptions(lazFile);
         if (useStreaming) {
-            outPoints = await processLASStreamingClipAndTransform(lazFile, header, mA, nA, ux, uy, vx, vy, halfWidth, cs);
+            outPoints = await processLASStreamingClipAndTransform(lazFile, header, mA, nA, ux, uy, vx, vy, halfWidth, halfWidthAlong, segmentLength, clipT, cs);
         } else {
             const arrayBuffer = await lazFile.arrayBuffer();
             const view = new DataView(arrayBuffer);
@@ -2778,9 +2782,10 @@ async function runOneSectionPair(header, lazFile, mA, nA, zA, mB, nB, zB, opts) 
                 const x = rawX * header.scaleX + header.offsetX;
                 const y = rawY * header.scaleY + header.offsetY;
                 const z = rawZ * header.scaleZ + header.offsetZ;
-                const t = clipAndTransformToProfile(x, y, z, mA, nA, ux, uy, vx, vy, halfWidth);
+                const t = clipAndTransformToProfile(x, y, z, mA, nA, ux, uy, vx, vy, halfWidth, halfWidthAlong, segmentLength, clipT);
                 if (t) {
                     const p = { x: t.x, y: t.y, z: t.z, intensity: view.getUint16(offset + 12, true) };
+                    if (t.classification !== undefined) p.classification = t.classification;
                     if (hasRGB && rgbOff >= 0 && offset + rgbOff + 6 <= arrayBuffer.byteLength) {
                         p.red = view.getUint16(offset + rgbOff, true);
                         p.green = view.getUint16(offset + rgbOff + 2, true);
@@ -2792,10 +2797,13 @@ async function runOneSectionPair(header, lazFile, mA, nA, zA, mB, nB, zB, opts) 
             }
         }
     }
+    // マーカー（スフィア・白黒）は奥行きクリップ(w)の対象外とする（halfWidthAlong=0 で変換のみ）
     for (const p of [...markerPointsA, ...markerPointsB]) {
-        const t = clipAndTransformToProfile(p.x, p.y, p.z, mA, nA, ux, uy, vx, vy, halfWidth);
+        const t = clipAndTransformToProfile(p.x, p.y, p.z, mA, nA, ux, uy, vx, vy, halfWidth, 0, 0, clipT);
         if (!t) continue;
-        outPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
+        const out = { x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue };
+        if (t.classification !== undefined) out.classification = t.classification;
+        outPoints.push(out);
     }
     if (outPoints.length === 0) throw new Error('切抜幅内に点が見つかりませんでした。');
     for (const p of outPoints) ensurePointRGB(p);
@@ -2820,12 +2828,15 @@ async function processSectionMode() {
         const pairsFileInput = document.getElementById('sectionPairsFile');
         const pairsFile = pairsFileInput?.files?.[0];
         const halfWidth = parseFloat(document.getElementById('clipWidth')?.value) || 0.01;
+        const clipWidthW = parseFloat(document.getElementById('clipWidthW')?.value) || 0;
+        const clipWidthT = parseFloat(document.getElementById('clipWidthT')?.value) || 0;
+        const halfWidthAlong = (clipWidthW > 0) ? clipWidthW / 2 : 0;
         const aLeftBRight = (document.getElementById('boundaryDirection').value === 'aLeftBRight');
         const scaleYInput = parseFloat(document.getElementById('scaleY')?.value);
         const scaleYVal = (Number.isFinite(scaleYInput) && scaleYInput > 0) ? scaleYInput : 1;
         const useTargetMarker = document.querySelector('input[name="boundaryMarker"]:checked')?.value === 'target';
         const targetHalf = (parseFloat(document.getElementById('boundaryTargetSize')?.value) || 0.1);
-        const opts = { aLeftBRight, halfWidth, scaleYVal, useTargetMarker, targetHalf };
+        const opts = { aLeftBRight, halfWidth, halfWidthAlong, clipT: clipWidthT, scaleYVal, useTargetMarker, targetHalf };
 
         if (!(halfWidth > 0)) {
             throw new Error('切抜幅は0より大きい数値を指定してください（例: 0.01）。');
@@ -2896,7 +2907,7 @@ async function processSectionMode() {
                 throw new Error('点A・BのXY座標を数値で入力してください（CSVから取り込む場合はプルダウンで選択）。Zは省略時0です。');
             }
             addLog('縦断・横断図作成（切抜→変換）を開始します...');
-            addLog(`A=(${xA}, ${yA}, ${zA}), B=(${xB}, ${yB}, ${zB}), 向き: ${aLeftBRight ? 'A→B' : 'B→A'}, 切抜幅: ±${halfWidth}m`);
+            addLog(`A=(${xA}, ${yA}, ${zA}), B=(${xB}, ${yB}, ${zB}), 向き: ${aLeftBRight ? 'A→B' : 'B→A'}, 切抜幅 t: ±${halfWidth}m${halfWidthAlong > 0 ? `, w: ±${halfWidthAlong}m（AB中点から）` : ''}${clipWidthT > 0 ? `, T: ${clipWidthT}m（クラス1=中心|Y'|≤t, クラス2=外側）` : ''}`);
             pairs = [{ mA, nA, zA, mB, nB, zB }];
         }
 
@@ -2931,7 +2942,7 @@ async function processSectionMode() {
             resultText.innerHTML = `
                 縦断・横断図作成（切抜→変換）が完了しました。<br>
                 ファイルサイズ: ${formatFileSize(blobs[0].size)}<br>
-                <small>切抜条件: |Y'| ≤ ${halfWidth}m。出力XY=縦断図（X=境界方向, Y=標高）。</small>
+                <small>切抜条件: |Y'| ≤ ${halfWidth}m（t）${halfWidthAlong > 0 ? `、AB中点から±${halfWidthAlong}m（w/2）` : ''}${clipWidthT > 0 ? `。T=${clipWidthT}mでクラス1（中心）/クラス2（外側）を出力` : ''}。出力XY=縦断図。</small>
             `;
         } else {
             const links = blobs.map((blob, i) => {
@@ -2946,7 +2957,7 @@ async function processSectionMode() {
                 縦断・横断図（複数組み合わせ）が完了しました。<br>
                 出力: ${blobs.length}個のLASファイル<br>
                 ${links}<br>
-                <small>切抜条件: |Y'| ≤ ${halfWidth}m。各リンクからダウンロードしてください。</small>
+                <small>切抜条件: |Y'| ≤ ${halfWidth}m（t）${halfWidthAlong > 0 ? `、AB中点から±${halfWidthAlong}m（w/2）` : ''}${clipWidthT > 0 ? `。T=${clipWidthT}mでクラス1/2を出力` : ''}。各リンクからダウンロードしてください。</small>
             `;
         }
         addLog(`✅ 縦断・横断図作成が完了しました。（${blobs.length}件）`);
