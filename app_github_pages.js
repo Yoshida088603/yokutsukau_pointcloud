@@ -170,6 +170,8 @@ csvInput.addEventListener('change', (e) => {
         csvLabel.classList.add('has-file');
         csvInfo.textContent = `${csvFile.name} (${formatFileSize(csvFile.size)})`;
         updateModeFromFiles();
+        const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
+        if (mode === 'section' && typeof fillSectionCsvDropdowns === 'function') fillSectionCsvDropdowns();
     }
 });
 
@@ -396,7 +398,7 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         const isCopc = mode === 'copc';
         const boundaryInputMode = document.querySelector('input[name="boundaryInputMode"]:checked')?.value || 'twoPoint';
         const isBoundarySima = isBoundary && boundaryInputMode === 'simaPerEdge';
-        if (csvSection) csvSection.style.display = isCenter ? 'block' : 'none';
+        if (csvSection) csvSection.style.display = (isCenter || mode === 'section') ? 'block' : 'none';
         if (boundarySection) boundarySection.style.display = isBoundaryLike ? 'block' : 'none';
         const boundarySectionTitle = document.getElementById('boundarySectionTitle');
         if (boundarySectionTitle) boundarySectionTitle.textContent = isBoundary ? '立面図作成' : '縦断・横断図作成（基準線AB）';
@@ -405,12 +407,20 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         if (isBoundaryLike && typeof updateBoundaryMarkerUI === 'function') updateBoundaryMarkerUI();
         const boundaryTwoPointOpts = document.getElementById('boundaryTwoPointOptions');
         if (boundaryTwoPointOpts) boundaryTwoPointOpts.style.display = (isBoundary && boundaryInputMode === 'twoPoint') || mode === 'section' ? 'block' : 'none';
+        const sectionCsvColA = document.getElementById('sectionCsvColA');
+        const sectionCsvColB = document.getElementById('sectionCsvColB');
+        const abPointGrid = document.getElementById('abPointGrid');
+        if (sectionCsvColA) sectionCsvColA.style.display = mode === 'section' ? 'block' : 'none';
+        if (sectionCsvColB) sectionCsvColB.style.display = mode === 'section' ? 'block' : 'none';
+        if (abPointGrid) abPointGrid.style.gridTemplateColumns = mode === 'section' ? 'auto 1fr 1fr 1fr' : '1fr 1fr 1fr';
+        if (mode === 'section' && csvFile) fillSectionCsvDropdowns();
         if (simSection) simSection.style.display = (isPolygon || isBoundarySima) ? 'block' : 'none';
         if (polygonSettings) polygonSettings.style.display = isPolygon ? 'block' : 'none';
         if (targetSettings) targetSettings.style.display = isTarget ? 'block' : 'none';
         if (copcSection) copcSection.style.display = isCopc ? 'block' : 'none';
         if (centerSettings) centerSettings.style.display = isCenter ? 'block' : 'none';
         if (sectionSettings) sectionSettings.style.display = mode === 'section' ? 'block' : 'none';
+        if (mode === 'section' && typeof updateSectionCountModeUI === 'function') updateSectionCountModeUI();
         if (processBtn) processBtn.style.display = isCopc ? 'none' : 'block';
         checkFiles();
     });
@@ -439,11 +449,111 @@ document.querySelectorAll('input[name="boundaryInputMode"]').forEach((radio) => 
     radio.addEventListener('change', updateBoundaryInputModeUI);
 });
 
+/** 縦断・横断のCSVプルダウンをCSVファイルの内容で更新（共通のX,Y,Z欄＋複数断面の10行も更新） */
+async function fillSectionCsvDropdowns() {
+    const selA = document.getElementById('sectionPointALabel');
+    const selB = document.getElementById('sectionPointBLabel');
+    if (!selA || !selB || !csvFile) return;
+    try {
+        const { centers, labels } = await readCSV();
+        const prevA = selA.value;
+        const prevB = selB.value;
+        const optHtml = '<option value="">—</option>' + labels.map((label, i) => `<option value="${i}">${label}</option>`).join('');
+        selA.innerHTML = optHtml;
+        selB.innerHTML = optHtml;
+        if (labels.length > 0) {
+            const iA = parseInt(prevA, 10);
+            const iB = parseInt(prevB, 10);
+            selA.value = (Number.isFinite(iA) && iA >= 0 && iA < labels.length) ? String(iA) : '';
+            selB.value = (Number.isFinite(iB) && iB >= 0 && iB < labels.length) ? String(iB) : '';
+        }
+        for (let i = 1; i <= SECTION_PAIRS_MAX; i++) {
+            const pairA = document.getElementById(`sectionPair${i}A`);
+            const pairB = document.getElementById(`sectionPair${i}B`);
+            if (pairA) { pairA.innerHTML = optHtml; pairA.value = ''; }
+            if (pairB) { pairB.innerHTML = optHtml; pairB.value = ''; }
+        }
+    } catch (e) {
+        console.warn('fillSectionCsvDropdowns:', e);
+        selA.innerHTML = '<option value="">CSVを読み込めません</option>';
+        selB.innerHTML = '<option value="">CSVを読み込めません</option>';
+    }
+}
+
+/** CSVプルダウンで選択した行の座標を点Aまたは点Bの入力欄に反映 */
+async function applySectionCsvToInputs(isPointA) {
+    const sel = document.getElementById(isPointA ? 'sectionPointALabel' : 'sectionPointBLabel');
+    const xId = isPointA ? 'pointAX' : 'pointBX';
+    const yId = isPointA ? 'pointAY' : 'pointBY';
+    const zId = isPointA ? 'pointAZ' : 'pointBZ';
+    if (!sel || sel.value === '' || !csvFile) return;
+    try {
+        const { centers } = await readCSV();
+        const i = parseInt(sel.value, 10);
+        if (!Number.isFinite(i) || i < 0 || i >= centers.length) return;
+        const [x, y, z] = centers[i];
+        const xEl = document.getElementById(xId);
+        const yEl = document.getElementById(yId);
+        const zEl = document.getElementById(zId);
+        if (xEl) xEl.value = Number.isFinite(x) ? String(x) : '';
+        if (yEl) yEl.value = Number.isFinite(y) ? String(y) : '';
+        if (zEl) zEl.value = (z !== undefined && Number.isFinite(z)) ? String(z) : '';
+    } catch (e) {
+        console.warn('applySectionCsvToInputs:', e);
+    }
+}
+document.getElementById('sectionPointALabel')?.addEventListener('change', () => applySectionCsvToInputs(true));
+document.getElementById('sectionPointBLabel')?.addEventListener('change', () => applySectionCsvToInputs(false));
+
+/** 複数断面用の10行（点A・点Bプルダウン）を1度だけ生成 */
+function ensureSectionPairsGrid() {
+    const grid = document.getElementById('sectionPairsGrid');
+    if (!grid || document.getElementById('sectionPair1A')) return;
+    for (let i = 1; i <= SECTION_PAIRS_MAX; i++) {
+        const lab = document.createElement('label');
+        lab.textContent = `断面${i}`;
+        lab.setAttribute('for', `sectionPair${i}A`);
+        const selA = document.createElement('select');
+        selA.id = `sectionPair${i}A`;
+        selA.innerHTML = '<option value="">—</option>';
+        const selB = document.createElement('select');
+        selB.id = `sectionPair${i}B`;
+        selB.innerHTML = '<option value="">—</option>';
+        grid.appendChild(lab);
+        grid.appendChild(selA);
+        grid.appendChild(selB);
+    }
+}
+
+function updateSectionCountModeUI() {
+    const mode = document.querySelector('input[name="sectionCountMode"]:checked')?.value || 'single';
+    const wrap = document.getElementById('sectionMultiPairsWrap');
+    if (wrap) wrap.style.display = mode === 'multi' ? 'block' : 'none';
+    if (mode === 'multi') {
+        ensureSectionPairsGrid();
+        if (csvFile) fillSectionCsvDropdowns();
+    }
+}
+document.querySelectorAll('input[name="sectionCountMode"]').forEach((r) => {
+    r.addEventListener('change', updateSectionCountModeUI);
+});
+
+/** 点A・点BのX,Y,Zを手入力したときにプルダウンを「—」に戻す */
+function onAbCoordinateInput(isPointA) {
+    const sel = document.getElementById(isPointA ? 'sectionPointALabel' : 'sectionPointBLabel');
+    if (sel) sel.value = '';
+}
+['pointAX', 'pointAY', 'pointAZ'].forEach((id) => document.getElementById(id)?.addEventListener('input', () => onAbCoordinateInput(true)));
+['pointBX', 'pointBY', 'pointBZ'].forEach((id) => document.getElementById(id)?.addEventListener('input', () => onAbCoordinateInput(false)));
+
 function checkFiles() {
     const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
     const boundaryInputMode = document.querySelector('input[name="boundaryInputMode"]:checked')?.value || 'twoPoint';
+    const sectionCountMode = document.querySelector('input[name="sectionCountMode"]:checked')?.value || 'single';
     if (mode === 'boundary' && boundaryInputMode === 'simaPerEdge') {
         processBtn.disabled = !(lazFile && simFile && wasmReady);
+    } else if (mode === 'section' && sectionCountMode === 'multi') {
+        processBtn.disabled = !(lazFile && csvFile && wasmReady);
     } else if (mode === 'boundary' || mode === 'section' || mode === 'target') {
         processBtn.disabled = !(lazFile && wasmReady);
     } else if (mode === 'polygon') {
@@ -2607,75 +2717,53 @@ async function processBoundaryTransform() {
 // 縦断・横断図作成モード（切抜幅→座標変換）
 // ============================================================================
 
+const SECTION_PAIRS_MAX = 10;
+
+/** 組み合わせCSV（labelA,labelB 1行1組）をパース。最大 SECTION_PAIRS_MAX 組。 */
+function parseSectionPairsCsv(text) {
+    const pairs = [];
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+    for (const line of lines) {
+        if (pairs.length >= SECTION_PAIRS_MAX) break;
+        const parts = line.split(',').map(p => p.trim());
+        if (parts.length >= 2 && parts[0] && parts[1]) {
+            const labelA = parts[0];
+            const labelB = parts[1];
+            if (labelA.toLowerCase() === 'labela' && labelB.toLowerCase() === 'labelb') continue; // ヘッダー
+            pairs.push({ labelA, labelB });
+        }
+    }
+    return pairs;
+}
+
 /**
- * AB直線（無限長）に対して切抜幅（±）で点群を切り抜き、縦断図座標へ変換してLAS出力
- * - 切抜判定はオリジナル座標系で |Y'| <= width
- * - 出力はXY平面=縦断図（X=境界方向, Y=標高, Z=奥行）
- * - スフィア（A/B中心、半径0.01、各50点、マゼンタ16bit）を追加（同じく切抜後に残るものを出力）
+ * 1組のA-Bで縦断・横断処理を行いLAS Blobを返す（ログ・進捗は呼び出し元で実施）
+ * @returns {Promise<Blob>}
  */
-async function processSectionMode() {
-    try {
-        if (!lazFile) {
-            throw new Error('LAZ/LASファイルを選択してください。');
-        }
-        if (!wasmReady || !LazPerf) {
-            throw new Error('LAZ解凍エンジンが初期化されていません。ページをリロードしてください。');
-        }
-
-        let [xA, yA] = surveyToMathPoint(parseFloat(document.getElementById('pointAX').value), parseFloat(document.getElementById('pointAY').value));
-        const zA = parseFloat(document.getElementById('pointAZ').value) || 0;
-        let [xB, yB] = surveyToMathPoint(parseFloat(document.getElementById('pointBX').value), parseFloat(document.getElementById('pointBY').value));
-        const zB = parseFloat(document.getElementById('pointBZ').value) || 0;
-        const aLeftBRight = (document.getElementById('boundaryDirection').value === 'aLeftBRight');
-        const halfWidth = parseFloat(document.getElementById('clipWidth')?.value) || 0.01;
-
-        if ([xA, yA, xB, yB].some(Number.isNaN)) {
-            throw new Error('点A・BのXY座標を数値で入力してください。Zは省略時0です。');
-        }
-        if (!(halfWidth > 0)) {
-            throw new Error('切抜幅は0より大きい数値を指定してください（例: 0.01）。');
-        }
-
-        const axes = computeBoundaryAxes(xA, yA, xB, yB, aLeftBRight);
-        if (!axes) throw new Error('点Aと点Bが同一です。異なる2点を指定してください。');
-        const { ux, uy, vx, vy } = axes;
-
-        processBtn.disabled = true;
-        progressSection.classList.add('active');
-        resultSection.classList.remove('active');
-        logDiv.innerHTML = '';
-        addLog('縦断・横断図作成（切抜→変換）を開始します...');
-        addLog(`A=(${xA}, ${yA}, ${zA}), B=(${xB}, ${yB}, ${zB}), 向き: ${aLeftBRight ? 'A→B' : 'B→A'}, 切抜幅: ±${halfWidth}m`);
-        updateProgress(0, '初期化中');
-
-        const header = await readLASHeaderFromFile(lazFile);
-        addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
-        logAndWarnDistanceToExtent(header, xA, yA, xB, yB);
-        updateProgress(10, 'ヘッダー解析完了');
-
-        const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
-        const SPHERE_RADIUS = 0.01;
-        const SPHERE_POINTS = 50;
-        const useTargetMarker = document.querySelector('input[name="boundaryMarker"]:checked')?.value === 'target';
-        const targetHalf = (parseFloat(document.getElementById('boundaryTargetSize')?.value) || 0.1);
-        let markerPointsA, markerPointsB;
-        if (useTargetMarker) {
-            markerPointsA = generateCheckerboardTargetFacingProfile(xA, yA, zA, targetHalf, ux, uy, vx, vy);
-            markerPointsB = generateCheckerboardTargetFacingProfile(xB, yB, zB, targetHalf, ux, uy, vx, vy);
+async function runOneSectionPair(header, lazFile, mA, nA, zA, mB, nB, zB, opts) {
+    const { aLeftBRight, halfWidth, scaleYVal, useTargetMarker, targetHalf, chunkSizeMB } = opts;
+    const axes = computeBoundaryAxes(mA, nA, mB, nB, aLeftBRight);
+    if (!axes) throw new Error('点Aと点Bが同一です。');
+    const { ux, uy, vx, vy } = axes;
+    const SPHERE_RADIUS = 0.01;
+    const SPHERE_POINTS = 50;
+    let markerPointsA, markerPointsB;
+    if (useTargetMarker) {
+        markerPointsA = generateCheckerboardTargetFacingProfile(mA, nA, zA, targetHalf, ux, uy, vx, vy);
+        markerPointsB = generateCheckerboardTargetFacingProfile(mB, nB, zB, targetHalf, ux, uy, vx, vy);
+    } else {
+        markerPointsA = generateSpherePointCloud(mA, nA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
+        markerPointsB = generateSpherePointCloud(mB, nB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
+    }
+    let outPoints = [];
+    if (header.isCompressed) {
+        const arrayBuffer = await lazFile.arrayBuffer();
+        outPoints = await decompressLAZClipAndTransform(arrayBuffer, header, mA, nA, ux, uy, vx, vy, halfWidth);
+    } else {
+        const { useStreaming, chunkSizeMB: cs } = getStreamingOptions(lazFile);
+        if (useStreaming) {
+            outPoints = await processLASStreamingClipAndTransform(lazFile, header, mA, nA, ux, uy, vx, vy, halfWidth, cs);
         } else {
-            markerPointsA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
-            markerPointsB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
-        }
-
-        let outPoints = [];
-
-        if (header.isCompressed) {
-            const arrayBuffer = await lazFile.arrayBuffer();
-            outPoints = await decompressLAZClipAndTransform(arrayBuffer, header, xA, yA, ux, uy, vx, vy, halfWidth);
-        } else if (useStreaming) {
-            outPoints = await processLASStreamingClipAndTransform(lazFile, header, xA, yA, ux, uy, vx, vy, halfWidth, chunkSizeMB);
-        } else {
-            // 小さめ非圧縮LASは一括で「切抜+変換」
             const arrayBuffer = await lazFile.arrayBuffer();
             const view = new DataView(arrayBuffer);
             const hasRGB = RGB_FORMATS.includes(header.pointFormat);
@@ -2690,7 +2778,7 @@ async function processSectionMode() {
                 const x = rawX * header.scaleX + header.offsetX;
                 const y = rawY * header.scaleY + header.offsetY;
                 const z = rawZ * header.scaleZ + header.offsetZ;
-                const t = clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth);
+                const t = clipAndTransformToProfile(x, y, z, mA, nA, ux, uy, vx, vy, halfWidth);
                 if (t) {
                     const p = { x: t.x, y: t.y, z: t.z, intensity: view.getUint16(offset + 12, true) };
                     if (hasRGB && rgbOff >= 0 && offset + rgbOff + 6 <= arrayBuffer.byteLength) {
@@ -2701,61 +2789,167 @@ async function processSectionMode() {
                     outPoints.push(p);
                 }
                 offset += prl;
-                if (i % LOG_UPDATE_INTERVAL === 0 && i > 0) {
-                    const progress = 20 + (i / header.numPoints) * 50;
-                    updateProgress(progress, `切抜+変換: ${Math.floor((i / header.numPoints) * 100)}%`);
-                    addLog(`処理済み: ${i.toLocaleString()}/${header.numPoints.toLocaleString()}点, 出力: ${outPoints.length.toLocaleString()}点`);
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                }
             }
         }
+    }
+    for (const p of [...markerPointsA, ...markerPointsB]) {
+        const t = clipAndTransformToProfile(p.x, p.y, p.z, mA, nA, ux, uy, vx, vy, halfWidth);
+        if (!t) continue;
+        outPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
+    }
+    if (outPoints.length === 0) throw new Error('切抜幅内に点が見つかりませんでした。');
+    for (const p of outPoints) ensurePointRGB(p);
+    if (scaleYVal !== 1) scaleYPoints(outPoints, scaleYVal);
+    const outputLasBuffer = createLASFile(outPoints, header);
+    return new Blob([outputLasBuffer], { type: 'application/octet-stream' });
+}
 
-        // マーカー（スフィア or 白黒ターゲット）はオリジナル座標系で追加→同じ切抜判定→同じ変換で outPoints に追加
-        let added = 0;
-        for (const p of [...markerPointsA, ...markerPointsB]) {
-            const t = clipAndTransformToProfile(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, halfWidth);
-            if (!t) continue;
-            outPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
-            added++;
+/**
+ * AB直線（無限長）に対して切抜幅（±）で点群を切り抜き、縦断図座標へ変換してLAS出力
+ * 複数組み合わせCSV指定時は最大10組を一括処理し、LASを複数出力する。
+ */
+async function processSectionMode() {
+    try {
+        if (!lazFile) {
+            throw new Error('LAZ/LASファイルを選択してください。');
         }
-        if (useTargetMarker) {
-            addLog(`白黒ターゲットを追加（切抜後に残る分のみ）: 追加${added}点（半幅${targetHalf}m・正面向き）`);
-        } else {
-            addLog(`スフィア点群を追加（切抜後に残る分のみ）: 追加${added}点（半径${SPHERE_RADIUS}m・マゼンタ）`);
+        if (!wasmReady || !LazPerf) {
+            throw new Error('LAZ解凍エンジンが初期化されていません。ページをリロードしてください。');
         }
 
-        if (outPoints.length === 0) {
-            throw new Error('切抜幅内に点が見つかりませんでした（スフィアも含めて0点）。幅を広げてください。');
-        }
-
-        // 出力はRGB付きに揃える（スフィアを確実に発色）
-        for (const p of outPoints) ensurePointRGB(p);
-
+        const pairsFileInput = document.getElementById('sectionPairsFile');
+        const pairsFile = pairsFileInput?.files?.[0];
+        const halfWidth = parseFloat(document.getElementById('clipWidth')?.value) || 0.01;
+        const aLeftBRight = (document.getElementById('boundaryDirection').value === 'aLeftBRight');
         const scaleYInput = parseFloat(document.getElementById('scaleY')?.value);
         const scaleYVal = (Number.isFinite(scaleYInput) && scaleYInput > 0) ? scaleYInput : 1;
-        if (scaleYVal !== 1) {
-            scaleYPoints(outPoints, scaleYVal);
-            addLog(`標高の強調適用: ${scaleYVal}倍`);
+        const useTargetMarker = document.querySelector('input[name="boundaryMarker"]:checked')?.value === 'target';
+        const targetHalf = (parseFloat(document.getElementById('boundaryTargetSize')?.value) || 0.1);
+        const opts = { aLeftBRight, halfWidth, scaleYVal, useTargetMarker, targetHalf };
+
+        if (!(halfWidth > 0)) {
+            throw new Error('切抜幅は0より大きい数値を指定してください（例: 0.01）。');
+        }
+
+        processBtn.disabled = true;
+        progressSection.classList.add('active');
+        resultSection.classList.remove('active');
+        logDiv.innerHTML = '';
+        updateProgress(0, '初期化中');
+
+        let pairs = []; // { mA, nA, zA, mB, nB, zB, labelA?, labelB? }
+        const sectionCountMode = document.querySelector('input[name="sectionCountMode"]:checked')?.value || 'single';
+
+        if (pairsFile) {
+            if (!csvFile) throw new Error('複数組み合わせ時は座標CSV（label,x,y,z）を選択してください。');
+            addLog('縦断・横断図（複数組み合わせCSV）を開始します...');
+            const pointsData = await readCSV();
+            const text = await pairsFile.text();
+            const pairLabels = parseSectionPairsCsv(text);
+            if (pairLabels.length === 0) throw new Error('組み合わせCSVに有効な行（labelA,labelB）がありません。');
+            addLog(`組み合わせ: ${pairLabels.length}組（最大${SECTION_PAIRS_MAX}組）`);
+            const labelToIndex = new Map(pointsData.labels.map((l, i) => [l, i]));
+            for (const { labelA, labelB } of pairLabels) {
+                const iA = labelToIndex.get(labelA);
+                const iB = labelToIndex.get(labelB);
+                if (iA === undefined) throw new Error(`座標CSVにラベル「${labelA}」がありません。`);
+                if (iB === undefined) throw new Error(`座標CSVにラベル「${labelB}」がありません。`);
+                const [sxA, syA, szA] = pointsData.centers[iA];
+                const [sxB, syB, szB] = pointsData.centers[iB];
+                const [mA, nA] = surveyToMathPoint(sxA, syA);
+                const [mB, nB] = surveyToMathPoint(sxB, syB);
+                const zA = (szA !== undefined && Number.isFinite(szA)) ? szA : 0;
+                const zB = (szB !== undefined && Number.isFinite(szB)) ? szB : 0;
+                pairs.push({ mA, nA, zA, mB, nB, zB, labelA, labelB });
+            }
+        } else if (sectionCountMode === 'multi') {
+            if (!csvFile) throw new Error('複数断面を入力する場合は座標CSV（label,x,y,z）を選択してください。');
+            const pointsData = await readCSV();
+            addLog('縦断・横断図（複数断面）を開始します...');
+            for (let i = 1; i <= SECTION_PAIRS_MAX; i++) {
+                const selA = document.getElementById(`sectionPair${i}A`);
+                const selB = document.getElementById(`sectionPair${i}B`);
+                if (!selA || !selB || selA.value === '' || selB.value === '') continue;
+                const iA = parseInt(selA.value, 10);
+                const iB = parseInt(selB.value, 10);
+                if (!Number.isFinite(iA) || !Number.isFinite(iB) || iA >= pointsData.centers.length || iB >= pointsData.centers.length) continue;
+                const [sxA, syA, szA] = pointsData.centers[iA];
+                const [sxB, syB, szB] = pointsData.centers[iB];
+                const [mA, nA] = surveyToMathPoint(sxA, syA);
+                const [mB, nB] = surveyToMathPoint(sxB, syB);
+                const zA = (szA !== undefined && Number.isFinite(szA)) ? szA : 0;
+                const zB = (szB !== undefined && Number.isFinite(szB)) ? szB : 0;
+                pairs.push({ mA, nA, zA, mB, nB, zB, labelA: pointsData.labels[iA], labelB: pointsData.labels[iB] });
+            }
+            if (pairs.length === 0) throw new Error('複数断面で少なくとも1行、点A・点Bを選択してください。');
+            addLog(`組み合わせ: ${pairs.length}組`);
+        } else {
+            const xA = parseFloat(document.getElementById('pointAX').value);
+            const yA = parseFloat(document.getElementById('pointAY').value);
+            const zA = parseFloat(document.getElementById('pointAZ').value) || 0;
+            const xB = parseFloat(document.getElementById('pointBX').value);
+            const yB = parseFloat(document.getElementById('pointBY').value);
+            const zB = parseFloat(document.getElementById('pointBZ').value) || 0;
+            const [mA, nA] = surveyToMathPoint(xA, yA);
+            const [mB, nB] = surveyToMathPoint(xB, yB);
+            if ([mA, nA, mB, nB].some(Number.isNaN)) {
+                throw new Error('点A・BのXY座標を数値で入力してください（CSVから取り込む場合はプルダウンで選択）。Zは省略時0です。');
+            }
+            addLog('縦断・横断図作成（切抜→変換）を開始します...');
+            addLog(`A=(${xA}, ${yA}, ${zA}), B=(${xB}, ${yB}, ${zB}), 向き: ${aLeftBRight ? 'A→B' : 'B→A'}, 切抜幅: ±${halfWidth}m`);
+            pairs = [{ mA, nA, zA, mB, nB, zB }];
+        }
+
+        const header = await readLASHeaderFromFile(lazFile);
+        addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
+        if (pairs.length === 1) logAndWarnDistanceToExtent(header, pairs[0].mA, pairs[0].nA, pairs[0].mB, pairs[0].nB);
+        updateProgress(10, 'ヘッダー解析完了');
+
+        const blobs = [];
+        const total = pairs.length;
+        for (let i = 0; i < total; i++) {
+            const p = pairs[i];
+            const percent = 10 + (i / total) * 85;
+            updateProgress(percent, total > 1 ? `組 ${i + 1}/${total}` : '切抜+変換中');
+            if (total > 1 && p.labelA) addLog(`組 ${i + 1}/${total}: ${p.labelA}–${p.labelB}`);
+            const blob = await runOneSectionPair(header, lazFile, p.mA, p.nA, p.zA, p.mB, p.nB, p.zB, opts);
+            blobs.push(blob);
         }
 
         updateProgress(95, 'LAS出力生成中');
-        const outputLasBuffer = createLASFile(outPoints, header);
         updateProgress(100, '完了');
 
-        const blob = new Blob([outputLasBuffer], { type: 'application/octet-stream' });
-        const url = URL.createObjectURL(blob);
-        downloadBtn.href = url;
-        downloadBtn.download = 'output_section.las';
-
-        resultSection.classList.add('active');
-        resultText.innerHTML = `
-            縦断・横断図作成（切抜→変換）が完了しました。<br>
-            出力点数: ${outPoints.length.toLocaleString()}点（切抜後＋スフィア）<br>
-            ファイルサイズ: ${formatFileSize(outputLasBuffer.byteLength)}<br>
-            <small>切抜条件: |Y'| ≤ ${halfWidth}m（AB直線に対する横方向距離）。出力XY=縦断図（X=境界方向, Y=標高）。</small>
-        `;
-        if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
-        addLog('✅ 縦断・横断図作成（切抜→変換）が完了しました。');
+        if (blobs.length === 1) {
+            const url = URL.createObjectURL(blobs[0]);
+            if (downloadBtn) {
+                downloadBtn.style.display = '';
+                downloadBtn.href = url;
+                downloadBtn.download = 'output_section.las';
+            }
+            if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
+            resultSection.classList.add('active');
+            resultText.innerHTML = `
+                縦断・横断図作成（切抜→変換）が完了しました。<br>
+                ファイルサイズ: ${formatFileSize(blobs[0].size)}<br>
+                <small>切抜条件: |Y'| ≤ ${halfWidth}m。出力XY=縦断図（X=境界方向, Y=標高）。</small>
+            `;
+        } else {
+            const links = blobs.map((blob, i) => {
+                const url = URL.createObjectURL(blob);
+                const name = `section_${i + 1}.las`;
+                return `<a href="${url}" download="${name}">${name}</a>`;
+            }).join(' &nbsp; ');
+            if (downloadBtn) downloadBtn.style.display = 'none';
+            if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
+            resultSection.classList.add('active');
+            resultText.innerHTML = `
+                縦断・横断図（複数組み合わせ）が完了しました。<br>
+                出力: ${blobs.length}個のLASファイル<br>
+                ${links}<br>
+                <small>切抜条件: |Y'| ≤ ${halfWidth}m。各リンクからダウンロードしてください。</small>
+            `;
+        }
+        addLog(`✅ 縦断・横断図作成が完了しました。（${blobs.length}件）`);
     } catch (err) {
         console.error(err);
         addLog(`❌ エラー: ${err.message}`);

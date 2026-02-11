@@ -356,8 +356,12 @@
                     </div>
                 </div>
                 <div id="boundaryTwoPointOptions">
-                    <p style="margin-bottom: 8px; color: #555;">測量座標系で２点の座標値を入力してください（XYZ座標・Zはマーカー中心に使用）</p>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+                    <p style="margin-bottom: 8px; color: #555;">測量座標系で２点の座標値を入力してください（XYZ・Zはマーカー中心に使用）。縦断・横断時はCSVから取り込むこともできます。</p>
+                    <div id="abPointGrid" style="display: grid; grid-template-columns: auto 1fr 1fr 1fr; gap: 12px 15px; align-items: end;">
+                        <div id="sectionCsvColA" class="setting-item" style="display: none;">
+                            <label for="sectionPointALabel">点AをCSVから</label>
+                            <select id="sectionPointALabel"><option value="">—</option></select>
+                        </div>
                         <div class="setting-item">
                             <label for="pointAX">点A X (m)</label>
                             <input type="number" id="pointAX" step="any" placeholder="xA">
@@ -369,6 +373,10 @@
                         <div class="setting-item">
                             <label for="pointAZ">点A Z (m)</label>
                             <input type="number" id="pointAZ" step="any" placeholder="zA（省略可）">
+                        </div>
+                        <div id="sectionCsvColB" class="setting-item" style="display: none;">
+                            <label for="sectionPointBLabel">点BをCSVから</label>
+                            <select id="sectionPointBLabel"><option value="">—</option></select>
                         </div>
                         <div class="setting-item">
                             <label for="pointBX">点B X (m)</label>
@@ -419,9 +427,31 @@
             <div id="sectionSettings" style="display: none;" class="settings">
                 <h4 style="margin-bottom: 10px;">切抜設定（縦断・横断図作成）</h4>
                 <div class="setting-item">
+                    <label>断面の数</label>
+                    <div style="display: flex; gap: 16px; margin-top: 6px; flex-wrap: wrap;">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                            <input type="radio" name="sectionCountMode" id="sectionCountSingle" value="single" checked>
+                            1断面（上記のA-B 1組）
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                            <input type="radio" name="sectionCountMode" id="sectionCountMulti" value="multi">
+                            複数断面（最大10組・下記で入力）
+                        </label>
+                    </div>
+                </div>
+                <div id="sectionMultiPairsWrap" style="display: none; margin-top: 12px;">
+                    <p style="margin-bottom: 8px; color: #555;">座標CSVのラベルで各断面の点A・点Bを選択してください（空欄の行は無視されます）。</p>
+                    <div id="sectionPairsGrid" style="display: grid; grid-template-columns: auto 1fr 1fr; gap: 8px 12px; align-items: center;"></div>
+                </div>
+                <div class="setting-item" style="margin-top: 12px;">
                     <label for="clipWidth">切抜幅（±, m）</label>
                     <input type="number" id="clipWidth" value="0.01" min="0" step="any">
                     <small style="color: #666; font-size: 12px;">AB直線（無限長）に対する横方向距離 |Y'| がこの値以内の点だけを残します（デフォルト: ±0.01m）。</small>
+                </div>
+                <div class="setting-item" style="margin-top: 12px;">
+                    <label for="sectionPairsFile">複数組み合わせ用CSVで一括指定（任意）</label>
+                    <input type="file" id="sectionPairsFile" accept=".csv">
+                    <small style="color: #666; font-size: 12px;">1行1組・形式: labelA,labelB。最大10組。ファイル指定時は上記の「断面の数」より優先されます。</small>
                 </div>
             </div>
 
