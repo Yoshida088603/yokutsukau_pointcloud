@@ -181,6 +181,7 @@ if (simInput) {
             if (simInfo) simInfo.textContent = `${simFile.name} (${formatFileSize(simFile.size)})`;
             updateModeFromFiles();
         }
+        checkFiles();
     });
 }
 
@@ -213,6 +214,8 @@ processBtn.addEventListener('click', () => {
     if (mode === 'section') return processSectionMode();
     if (mode === 'polygon') return processPolygonBoundary();
     if (mode === 'target') return processTargetCorners();
+    if (mode === 'clipPolygon') return processBoundaryClipPolygon();
+    if (mode === 'clipPolygonSim') return processBoundaryClipPolygonFromSim();
     return processFiles();
 });
 
@@ -385,14 +388,15 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         const copcSection = document.getElementById('copcSection');
         const processBtn = document.getElementById('processBtn');
         const isCenter = mode === 'center';
-        const isBoundaryLike = mode === 'boundary' || mode === 'section';
+        const isBoundaryLike = mode === 'boundary' || mode === 'section' || mode === 'clipPolygon';
         const isPolygon = mode === 'polygon';
+        const isClipPolygonSim = mode === 'clipPolygonSim';
         const isTarget = mode === 'target';
         const isCopc = mode === 'copc';
         if (csvSection) csvSection.style.display = isCenter ? 'block' : 'none';
         if (boundarySection) boundarySection.style.display = isBoundaryLike ? 'block' : 'none';
         if (isBoundaryLike && typeof updateBoundaryMarkerUI === 'function') updateBoundaryMarkerUI();
-        if (simSection) simSection.style.display = isPolygon ? 'block' : 'none';
+        if (simSection) simSection.style.display = (isPolygon || isClipPolygonSim) ? 'block' : 'none';
         if (polygonSettings) polygonSettings.style.display = isPolygon ? 'block' : 'none';
         if (targetSettings) targetSettings.style.display = isTarget ? 'block' : 'none';
         if (copcSection) copcSection.style.display = isCopc ? 'block' : 'none';
@@ -415,7 +419,11 @@ document.addEventListener('DOMContentLoaded', updateBoundaryMarkerUI);
 
 function checkFiles() {
     const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
-    if (mode === 'boundary' || mode === 'section' || mode === 'target') {
+    if (mode === 'clipPolygon') {
+        processBtn.disabled = false;
+    } else if (mode === 'clipPolygonSim') {
+        processBtn.disabled = !(simFile && simFile.name);
+    } else if (mode === 'boundary' || mode === 'section' || mode === 'target') {
         processBtn.disabled = !(lazFile && wasmReady);
     } else if (mode === 'polygon') {
         processBtn.disabled = !(lazFile && simFile && wasmReady);
@@ -900,6 +908,29 @@ function computeBoundaryAxes(xA, yA, xB, yB, aLeftBRight) {
     const vx = -uy;
     const vy = ux;
     return { ux, uy, vx, vy };
+}
+
+/**
+ * 立面図の範囲クロップ用ポリゴンを生成する（単独機能）。
+ * AB を内側に含み、左右・下は marginM、上（視線方向＝v 正）は marginUpM で広げた四角形。
+ * @param {number} xA - 点A X
+ * @param {number} yA - 点A Y
+ * @param {number} xB - 点B X
+ * @param {number} yB - 点B Y
+ * @param {{ ux: number, uy: number, vx: number, vy: number }} axes - computeBoundaryAxes の戻り値
+ * @param {number} [marginM=1] - 左右・下の余裕 (m)
+ * @param {number} [marginUpM=100] - 上方向の長さ (m)
+ * @returns {number[][]} [[x,y], [x,y], [x,y], [x,y]] 閉路順 P0(下A側)→P1(下B側)→P2(上B側)→P3(上A側)
+ */
+function getBoundaryClipPolygon(xA, yA, xB, yB, axes, marginM = 1, marginUpM = 100) {
+    const { ux, uy, vx, vy } = axes;
+    const m = marginM;
+    const mUp = marginUpM;
+    const P0 = [xA - m * ux - m * vx, yA - m * uy - m * vy];
+    const P1 = [xB + m * ux - m * vx, yB + m * uy - m * vy];
+    const P2 = [xB + m * ux + mUp * vx, yB + m * uy + mUp * vy];
+    const P3 = [xA - m * ux + mUp * vx, yA - m * uy + mUp * vy];
+    return [P0, P1, P2, P3];
 }
 
 /**
@@ -2138,6 +2169,150 @@ function createLASFile(points, header) {
 // ============================================================================
 
 /**
+ * ポリゴン [[x,y],...] の重心（XY）を返す。
+ */
+function polygonCentroid(poly) {
+    if (!poly || poly.length === 0) return [0, 0];
+    let sx = 0, sy = 0;
+    for (const [x, y] of poly) {
+        sx += x;
+        sy += y;
+    }
+    return [sx / poly.length, sy / poly.length];
+}
+
+/**
+ * SIMAの全辺について範囲クロップポリゴンを生成（各辺で左右1m・下1m・上100m、上方向はポリゴン外側向き）。
+ */
+async function processBoundaryClipPolygonFromSim() {
+    try {
+        if (!simFile || !simFile.name) {
+            throw new Error('SIMA形式（.sim）ファイルを選択してください。');
+        }
+        const text = await simFile.text();
+        const poly = parseSim(text);
+        if (!poly || poly.length < 3) {
+            throw new Error('SIMAから有効なポリゴン（3頂点以上）を取得できませんでした。');
+        }
+
+        const centroid = polygonCentroid(poly);
+        const marginM = 1;
+        const marginUpM = 100;
+        const allClipPolygons = [];
+        const n = poly.length;
+
+        for (let i = 0; i < n; i++) {
+            const A = poly[i];
+            const B = poly[(i + 1) % n];
+            let xA = A[0], yA = A[1], xB = B[0], yB = B[1];
+            let axes = computeBoundaryAxes(xA, yA, xB, yB, true);
+            if (!axes) continue;
+            const { vx, vy } = axes;
+            const midX = (xA + xB) / 2, midY = (yA + yB) / 2;
+            const dot = (centroid[0] - midX) * vx + (centroid[1] - midY) * vy;
+            if (dot > 0) {
+                axes = computeBoundaryAxes(xB, yB, xA, yA, true);
+                if (!axes) continue;
+                xA = B[0];
+                yA = B[1];
+                xB = A[0];
+                yB = A[1];
+            }
+            const clipPoly = getBoundaryClipPolygon(xA, yA, xB, yB, axes, marginM, marginUpM);
+            allClipPolygons.push({ edgeIndex: i, A: [...A], B: [...B], polygon: clipPoly });
+        }
+
+        processBtn.disabled = true;
+        progressSection.classList.add('active');
+        resultSection.classList.add('active');
+        logDiv.innerHTML = '';
+        addLog('範囲クロップポリゴン（SIMA全辺）');
+        addLog(`頂点数: ${n}, 辺数: ${n}, 余裕: 左右・下 ${marginM}m, 上 ${marginUpM}m`);
+        allClipPolygons.forEach(({ edgeIndex, A, B, polygon }) => {
+            addLog(`辺${edgeIndex}: (${A[0]},${A[1]})→(${B[0]},${B[1]})`);
+            polygon.forEach((pt, j) => addLog(`  P${j}: ${pt[0]}, ${pt[1]}`));
+        });
+
+        const edgeLabel = (i) => (i < 26 ? String.fromCharCode(65 + i) : `E${i - 25}`);
+        const rows = [];
+        let globalIndex = 1;
+        for (const { edgeIndex, polygon } of allClipPolygons) {
+            const labelBase = edgeLabel(edgeIndex);
+            for (let j = 0; j < polygon.length; j++) {
+                rows.push(`${globalIndex},${labelBase}${j + 1},${polygon[j][0]},${polygon[j][1]}`);
+                globalIndex++;
+            }
+        }
+        const coordsText = rows.join('\n');
+        resultText.innerHTML = `
+            範囲クロップポリゴン（SIMA全辺・${n}本）を生成しました。<br>
+            <label style="display:block; margin-top:10px; font-weight:600;">出力（番号,ラベル,x,y）コピー用:</label>
+            <textarea id="clipPolygonSimCoordsCopy" readonly rows="14" style="width:100%; margin-top:4px; font-family:monospace; font-size:13px; padding:8px; box-sizing:border-box;"></textarea>
+        `;
+        const ta = document.getElementById('clipPolygonSimCoordsCopy');
+        if (ta) ta.value = coordsText;
+        if (downloadBtn) downloadBtn.style.display = 'none';
+        if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
+        addLog('✅ 完了');
+    } catch (err) {
+        console.error(err);
+        addLog(`❌ エラー: ${err.message}`);
+        alert(`エラー: ${err.message}`);
+    } finally {
+        processBtn.disabled = false;
+    }
+}
+
+/**
+ * 範囲クロップポリゴン生成を実行（単独機能）。A・Bと向きから四角形ポリゴン座標を算出し表示する。
+ */
+function processBoundaryClipPolygon() {
+    try {
+        const xA = parseFloat(document.getElementById('pointAX').value);
+        const yA = parseFloat(document.getElementById('pointAY').value);
+        const xB = parseFloat(document.getElementById('pointBX').value);
+        const yB = parseFloat(document.getElementById('pointBY').value);
+        const aLeftBRight = (document.getElementById('boundaryDirection').value === 'aLeftBRight');
+        if ([xA, yA, xB, yB].some(Number.isNaN)) {
+            throw new Error('境界点A・BのXY座標を数値で入力してください。');
+        }
+        const axes = computeBoundaryAxes(xA, yA, xB, yB, aLeftBRight);
+        if (!axes) {
+            throw new Error('点Aと点Bが同一です。異なる2点を指定してください。');
+        }
+        const polygon = getBoundaryClipPolygon(xA, yA, xB, yB, axes);
+
+        processBtn.disabled = true;
+        progressSection.classList.add('active');
+        resultSection.classList.add('active');
+        logDiv.innerHTML = '';
+        addLog('範囲クロップポリゴン生成');
+        addLog(`A=(${xA}, ${yA}), B=(${xB}, ${yB}), 向き: ${aLeftBRight ? 'A→B' : 'B→A'}`);
+        addLog(`余裕: 左右・下 1m, 上 100m`);
+        addLog(`ポリゴン頂点（P0→P1→P2→P3）:`);
+        polygon.forEach((pt, i) => addLog(`  P${i}: ${pt[0]}, ${pt[1]}`));
+
+        const coordsText = polygon.map(pt => `${pt[0]}, ${pt[1]}`).join('\n');
+        resultText.innerHTML = `
+            範囲クロップポリゴン（4頂点）を生成しました。<br>
+            <label style="display:block; margin-top:10px; font-weight:600;">ポリゴン座標（コピー用） [[x,y], ...] 形式:</label>
+            <textarea id="clipPolygonCoordsCopy" readonly rows="6" style="width:100%; margin-top:4px; font-family:monospace; font-size:13px; padding:8px; box-sizing:border-box;"></textarea>
+        `;
+        const ta = document.getElementById('clipPolygonCoordsCopy');
+        if (ta) ta.value = coordsText;
+        if (downloadBtn) downloadBtn.style.display = 'none';
+        if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
+        addLog('✅ 完了');
+    } catch (err) {
+        console.error(err);
+        addLog(`❌ エラー: ${err.message}`);
+        alert(`エラー: ${err.message}`);
+    } finally {
+        processBtn.disabled = false;
+    }
+}
+
+/**
  * 立面図作成を実行（境界の内側から外側を見通す座標系に変換・LAS出力）
  */
 async function processBoundaryTransform() {
@@ -2265,8 +2440,11 @@ async function processBoundaryTransform() {
         updateProgress(100, '完了');
 
         const url = URL.createObjectURL(blob);
-        downloadBtn.href = url;
-        downloadBtn.download = 'output_boundary.las';
+        if (downloadBtn) {
+            downloadBtn.style.display = '';
+            downloadBtn.href = url;
+            downloadBtn.download = 'output_boundary.las';
+        }
         resultSection.classList.add('active');
         resultText.innerHTML = `
             立面図作成が完了しました。<br>
