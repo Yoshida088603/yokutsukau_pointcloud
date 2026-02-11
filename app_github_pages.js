@@ -210,13 +210,13 @@ if (fileDropZone) {
 
 processBtn.addEventListener('click', () => {
     const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
-    if (mode === 'boundary') return processBoundaryTransform();
+    if (mode === 'boundary') {
+        const inputMode = document.querySelector('input[name="boundaryInputMode"]:checked')?.value || 'twoPoint';
+        return inputMode === 'simaPerEdge' ? processBoundaryPerEdgeFromSim() : processBoundaryTransform();
+    }
     if (mode === 'section') return processSectionMode();
     if (mode === 'polygon') return processPolygonBoundary();
     if (mode === 'target') return processTargetCorners();
-    if (mode === 'clipPolygon') return processBoundaryClipPolygon();
-    if (mode === 'clipPolygonSim') return processBoundaryClipPolygonFromSim();
-    if (mode === 'boundaryPerEdge') return processBoundaryPerEdgeFromSim();
     return processFiles();
 });
 
@@ -389,16 +389,23 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         const copcSection = document.getElementById('copcSection');
         const processBtn = document.getElementById('processBtn');
         const isCenter = mode === 'center';
-        const isBoundaryLike = mode === 'boundary' || mode === 'section' || mode === 'clipPolygon';
+        const isBoundary = mode === 'boundary';
+        const isBoundaryLike = isBoundary || mode === 'section';
         const isPolygon = mode === 'polygon';
-        const isClipPolygonSim = mode === 'clipPolygonSim';
-        const isBoundaryPerEdge = mode === 'boundaryPerEdge';
         const isTarget = mode === 'target';
         const isCopc = mode === 'copc';
+        const boundaryInputMode = document.querySelector('input[name="boundaryInputMode"]:checked')?.value || 'twoPoint';
+        const isBoundarySima = isBoundary && boundaryInputMode === 'simaPerEdge';
         if (csvSection) csvSection.style.display = isCenter ? 'block' : 'none';
-        if (boundarySection) boundarySection.style.display = (isBoundaryLike || isBoundaryPerEdge) ? 'block' : 'none';
-        if ((isBoundaryLike || isBoundaryPerEdge) && typeof updateBoundaryMarkerUI === 'function') updateBoundaryMarkerUI();
-        if (simSection) simSection.style.display = (isPolygon || isClipPolygonSim || isBoundaryPerEdge) ? 'block' : 'none';
+        if (boundarySection) boundarySection.style.display = isBoundaryLike ? 'block' : 'none';
+        const boundarySectionTitle = document.getElementById('boundarySectionTitle');
+        if (boundarySectionTitle) boundarySectionTitle.textContent = isBoundary ? '立面図作成' : '縦断・横断図作成（基準線AB）';
+        const boundaryInputModeWrap = document.getElementById('boundaryInputModeWrap');
+        if (boundaryInputModeWrap) boundaryInputModeWrap.style.display = isBoundary ? 'block' : 'none';
+        if (isBoundaryLike && typeof updateBoundaryMarkerUI === 'function') updateBoundaryMarkerUI();
+        const boundaryTwoPointOpts = document.getElementById('boundaryTwoPointOptions');
+        if (boundaryTwoPointOpts) boundaryTwoPointOpts.style.display = (isBoundary && boundaryInputMode === 'twoPoint') || mode === 'section' ? 'block' : 'none';
+        if (simSection) simSection.style.display = (isPolygon || isBoundarySima) ? 'block' : 'none';
         if (polygonSettings) polygonSettings.style.display = isPolygon ? 'block' : 'none';
         if (targetSettings) targetSettings.style.display = isTarget ? 'block' : 'none';
         if (copcSection) copcSection.style.display = isCopc ? 'block' : 'none';
@@ -419,13 +426,23 @@ document.querySelectorAll('input[name="boundaryMarker"]').forEach((radio) => {
 });
 document.addEventListener('DOMContentLoaded', updateBoundaryMarkerUI);
 
+function updateBoundaryInputModeUI() {
+    const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
+    const boundaryInputMode = document.querySelector('input[name="boundaryInputMode"]:checked')?.value || 'twoPoint';
+    const boundaryTwoPointOpts = document.getElementById('boundaryTwoPointOptions');
+    const simSection = document.getElementById('simSection');
+    if (boundaryTwoPointOpts) boundaryTwoPointOpts.style.display = (mode === 'boundary' && boundaryInputMode === 'twoPoint') ? 'block' : 'none';
+    if (simSection && mode === 'boundary') simSection.style.display = boundaryInputMode === 'simaPerEdge' ? 'block' : 'none';
+    checkFiles();
+}
+document.querySelectorAll('input[name="boundaryInputMode"]').forEach((radio) => {
+    radio.addEventListener('change', updateBoundaryInputModeUI);
+});
+
 function checkFiles() {
     const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
-    if (mode === 'clipPolygon') {
-        processBtn.disabled = false;
-    } else if (mode === 'clipPolygonSim') {
-        processBtn.disabled = !(simFile && simFile.name);
-    } else if (mode === 'boundaryPerEdge') {
+    const boundaryInputMode = document.querySelector('input[name="boundaryInputMode"]:checked')?.value || 'twoPoint';
+    if (mode === 'boundary' && boundaryInputMode === 'simaPerEdge') {
         processBtn.disabled = !(lazFile && simFile && wasmReady);
     } else if (mode === 'boundary' || mode === 'section' || mode === 'target') {
         processBtn.disabled = !(lazFile && wasmReady);
@@ -1343,6 +1360,7 @@ function getStreamingOptions(lazFile) {
  * @returns {Promise<Object>} parseLASHeader と同じ形式のヘッダー
  */
 async function readLASHeaderFromFile(lazFile) {
+    if (!lazFile) throw new Error('LAZ/LASファイルが指定されていません。');
     const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
     const headerBuffer = await headerBlob.arrayBuffer();
     const header = parseLASHeader(headerBuffer);
@@ -2214,90 +2232,6 @@ function polygonCentroid(poly) {
     return [sx / poly.length, sy / poly.length];
 }
 
-/**
- * SIMAの全辺について範囲クロップポリゴンを生成（各辺で左右1m・下1m・上100m、上方向はポリゴン外側向き）。
- */
-async function processBoundaryClipPolygonFromSim() {
-    try {
-        if (!simFile || !simFile.name) {
-            throw new Error('SIMA形式（.sim）ファイルを選択してください。');
-        }
-        const text = await simFile.text();
-        const polyRaw = parseSim(text);
-        if (!polyRaw || polyRaw.length < 3) {
-            throw new Error('SIMAから有効なポリゴン（3頂点以上）を取得できませんでした。');
-        }
-        const poly = simaToMathPolygon(polyRaw);
-
-        const centroid = polygonCentroid(poly);
-        const marginM = 1;
-        const marginUpM = 100;
-        const allClipPolygons = [];
-        const n = poly.length;
-
-        for (let i = 0; i < n; i++) {
-            const A = poly[i];
-            const B = poly[(i + 1) % n];
-            let xA = A[0], yA = A[1], xB = B[0], yB = B[1];
-            let axes = computeBoundaryAxes(xA, yA, xB, yB, true);
-            if (!axes) continue;
-            const { vx, vy } = axes;
-            const midX = (xA + xB) / 2, midY = (yA + yB) / 2;
-            const dot = (centroid[0] - midX) * vx + (centroid[1] - midY) * vy;
-            // 上方向100mはポリゴン外側向き。centroid が +v 側（内側）なら反転して +v を外側に向ける
-            if (dot > 0) {
-                axes = computeBoundaryAxes(xB, yB, xA, yA, true);
-                if (!axes) continue;
-                xA = B[0];
-                yA = B[1];
-                xB = A[0];
-                yB = A[1];
-            }
-            const clipPoly = getBoundaryClipPolygon(xA, yA, xB, yB, axes, marginM, marginUpM);
-            allClipPolygons.push({ edgeIndex: i, A: [...A], B: [...B], polygon: clipPoly });
-        }
-
-        processBtn.disabled = true;
-        progressSection.classList.add('active');
-        resultSection.classList.add('active');
-        logDiv.innerHTML = '';
-        addLog('範囲クロップポリゴン（SIMA全辺）');
-        addLog(`頂点数: ${n}, 辺数: ${n}, 余裕: 左右・下 ${marginM}m, 上 ${marginUpM}m`);
-        allClipPolygons.forEach(({ edgeIndex, A, B, polygon }) => {
-            addLog(`辺${edgeIndex}: (${A[0]},${A[1]})→(${B[0]},${B[1]})`);
-            polygon.forEach((pt, j) => addLog(`  P${j}: ${pt[0]}, ${pt[1]}`));
-        });
-
-        const edgeLabel = (i) => (i < 26 ? String.fromCharCode(65 + i) : `E${i - 25}`);
-        const rows = [];
-        let globalIndex = 1;
-        for (const { edgeIndex, polygon } of allClipPolygons) {
-            const labelBase = edgeLabel(edgeIndex);
-            for (let j = 0; j < polygon.length; j++) {
-                rows.push(`${globalIndex},${labelBase}${j + 1},${polygon[j][0]},${polygon[j][1]}`);
-                globalIndex++;
-            }
-        }
-        const coordsText = rows.join('\n');
-        resultText.innerHTML = `
-            範囲クロップポリゴン（SIMA全辺・${n}本）を生成しました。<br>
-            <label style="display:block; margin-top:10px; font-weight:600;">出力（番号,ラベル,x,y）コピー用:</label>
-            <textarea id="clipPolygonSimCoordsCopy" readonly rows="14" style="width:100%; margin-top:4px; font-family:monospace; font-size:13px; padding:8px; box-sizing:border-box;"></textarea>
-        `;
-        const ta = document.getElementById('clipPolygonSimCoordsCopy');
-        if (ta) ta.value = coordsText;
-        if (downloadBtn) downloadBtn.style.display = 'none';
-        if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
-        addLog('✅ 完了');
-    } catch (err) {
-        console.error(err);
-        addLog(`❌ エラー: ${err.message}`);
-        alert(`エラー: ${err.message}`);
-    } finally {
-        processBtn.disabled = false;
-    }
-}
-
 /** 立面図・辺ごとに使う定数 */
 const SPHERE_RADIUS = 0.01;
 const SPHERE_POINTS = 50;
@@ -2321,18 +2255,136 @@ function createMarkerPointsForEdge(edge, useTargetMarker, targetHalf, zA, zB) {
 }
 
 /**
- * 辺のマーカー点をSIMA用に変換して extraPoints 用の配列を返す
+ * 2点 A・B から「1辺」の edges 配列を生成（立面図作成モード用）。clipPolygon はなし（全点変換）。
  */
-function getTransformedMarkersForEdge(edge, useTargetMarker, targetHalf, zA, zB) {
+function buildEdgesFromTwoPoints(xA, yA, xB, yB, aLeftBRight) {
+    const axes = computeBoundaryAxes(xA, yA, xB, yB, aLeftBRight);
+    if (!axes) return [];
+    return [{ xA, yA, xB, yB, axes, clipPolygon: null }];
+}
+
+/**
+ * 辺のマーカー点を変換して extraPoints 用の配列を返す
+ */
+function getTransformedMarkersForEdge(edge, useTargetMarker, targetHalf, zA, zB, transformOpts) {
     const { markerPointsA, markerPointsB } = createMarkerPointsForEdge(edge, useTargetMarker, targetHalf, zA, zB);
     const { xA, yA, axes } = edge;
     const { ux, uy, vx, vy } = axes;
     const extraPoints = [];
     for (const p of [...markerPointsA, ...markerPointsB]) {
-        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, SIMA_TRANSFORM_OPTS);
+        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, transformOpts);
         extraPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
     }
     return extraPoints;
+}
+
+/**
+ * 複数辺を境界座標系に変換して LAS Blob の配列を返す共通パイプライン。
+ * @param {Array<{xA,yA,xB,yB,axes,clipPolygon?:number[][]|null}>} edges
+ * @param {Object} header - LASヘッダー
+ * @param {File} lazFile - LAZ/LAS ファイル
+ * @param {Object} opts - transformOpts, zA, zB, useTargetMarker, targetHalf, singleOutput, chunkSizeMB, onProgress(percent, msg), edgeLabel(e), scaleY, onPointsLoaded(n), onBeforeLoadPoints(useStreaming)
+ * @returns {Promise<Blob[]>}
+ */
+async function runBoundaryEdgesPipeline(edges, header, lazFile, opts) {
+    const {
+        transformOpts = {},
+        zA = 0,
+        zB = 0,
+        useTargetMarker = false,
+        targetHalf = 0.1,
+        singleOutput = false,
+        chunkSizeMB = 100,
+        onProgress = () => {},
+        edgeLabel = (e) => String(e + 1),
+        scaleY = 1,
+        onPointsLoaded = () => {},
+        onBeforeLoadPoints = () => {}
+    } = opts;
+
+    const blobs = [];
+    if (header.isCompressed) {
+        const arrayBuffer = await lazFile.arrayBuffer();
+        if (singleOutput && edges.length === 1) {
+            const edge = edges[0];
+            const { xA, yA, axes } = edge;
+            const { ux, uy, vx, vy } = axes;
+            const extraPoints = getTransformedMarkersForEdge(edge, useTargetMarker, targetHalf, zA, zB, transformOpts);
+            const blob = await streamLAZToLASBlob(arrayBuffer, header, {
+                onPoint(p) {
+                    const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, transformOpts);
+                    p.x = t.x;
+                    p.y = t.y;
+                    p.z = t.z;
+                },
+                onProgress(i, total) {
+                    onProgress(25 + (i / total) * 65, `解凍+変換: ${i.toLocaleString()}/${total.toLocaleString()}点`);
+                },
+                extraPoints
+            });
+            blobs.push(blob);
+        } else {
+            for (let e = 0; e < edges.length; e++) {
+                const edge = edges[e];
+                const { xA, yA, axes, clipPolygon } = edge;
+                const { ux, uy, vx, vy } = axes;
+                const extraPoints = getTransformedMarkersForEdge(edge, useTargetMarker, targetHalf, zA, zB, transformOpts);
+                const blob = await streamLAZToLASBlob(arrayBuffer, header, {
+                    filterPoint: clipPolygon ? (p) => pointInPolygon(p.x, p.y, clipPolygon) : undefined,
+                    onPoint(p) {
+                        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, transformOpts);
+                        p.x = t.x;
+                        p.y = t.y;
+                        p.z = t.z;
+                    },
+                    onProgress(i, total) {
+                        const base = (e / edges.length) * 90;
+                        const prog = base + (i / total) * (90 / edges.length);
+                        onProgress(10 + prog, `辺${edgeLabel(e)}: ${i.toLocaleString()}/${total.toLocaleString()}点`);
+                    },
+                    extraPoints
+                });
+                blobs.push(blob);
+            }
+        }
+    } else {
+        const { useStreaming, chunkSizeMB: cs } = getStreamingOptions(lazFile);
+        onBeforeLoadPoints(useStreaming);
+        let points;
+        if (useStreaming) {
+            points = await processLASStreamingAllPoints(lazFile, header, cs);
+        } else {
+            const arrayBuffer = await lazFile.arrayBuffer();
+            points = readAllPointsFromLASBuffer(arrayBuffer, header);
+        }
+        onPointsLoaded(points.length);
+        if (singleOutput && edges.length === 1) {
+            const edge = edges[0];
+            const { xA, yA, axes } = edge;
+            const { ux, uy, vx, vy } = axes;
+            onProgress(70, '座標変換中');
+            const { markerPointsA, markerPointsB } = createMarkerPointsForEdge(edge, useTargetMarker, targetHalf, zA, zB);
+            const outPoints = [...points, ...markerPointsA, ...markerPointsB];
+            transformPointsBoundary(outPoints, xA, yA, ux, uy, vx, vy, transformOpts);
+            if (scaleY !== 1) scaleYPoints(outPoints, scaleY);
+            for (const p of outPoints) ensurePointRGB(p);
+            onProgress(95, 'LAS出力生成中');
+            blobs.push(new Blob([createLASFile(outPoints, header)], { type: 'application/octet-stream' }));
+        } else {
+            for (let e = 0; e < edges.length; e++) {
+                const edge = edges[e];
+                const { xA, yA, axes, clipPolygon } = edge;
+                const { ux, uy, vx, vy } = axes;
+                const filtered = clipPolygon ? points.filter((p) => pointInPolygon(p.x, p.y, clipPolygon)) : [...points];
+                const { markerPointsA, markerPointsB } = createMarkerPointsForEdge(edge, useTargetMarker, targetHalf, zA, zB);
+                const outPoints = [...filtered, ...markerPointsA, ...markerPointsB];
+                transformPointsBoundary(outPoints, xA, yA, ux, uy, vx, vy, transformOpts);
+                for (const p of outPoints) ensurePointRGB(p);
+                blobs.push(new Blob([createLASFile(outPoints, header)], { type: 'application/octet-stream' }));
+            }
+        }
+    }
+    return blobs;
 }
 
 /**
@@ -2396,59 +2448,29 @@ async function processBoundaryPerEdgeFromSim() {
         const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
 
         const edgeLabel = (i) => (i < 26 ? String.fromCharCode(65 + i) : `E${i - 25}`);
-        const blobs = [];
-
-        if (header.isCompressed) {
-            const arrayBuffer = await lazFile.arrayBuffer();
-            for (let e = 0; e < edges.length; e++) {
-                const edge = edges[e];
-                const { xA, yA, axes, clipPolygon } = edge;
-                const { ux, uy, vx, vy } = axes;
-                const extraPoints = getTransformedMarkersForEdge(edge, useTargetMarker, targetHalf, zA, zB);
-                const blob = await streamLAZToLASBlob(arrayBuffer, header, {
-                    filterPoint: (p) => pointInPolygon(p.x, p.y, clipPolygon),
-                    onPoint(p) {
-                        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, SIMA_TRANSFORM_OPTS);
-                        p.x = t.x;
-                        p.y = t.y;
-                        p.z = t.z;
-                    },
-                    onProgress(i, pointCount) {
-                        const base = (e / edges.length) * 90;
-                        const prog = base + (i / pointCount) * (90 / edges.length);
-                        updateProgress(10 + prog, `辺${edgeLabel(e)}: ${i.toLocaleString()}/${pointCount.toLocaleString()}点`);
-                    },
-                    extraPoints
-                });
-                blobs.push(blob);
-                addLog(`辺${edgeLabel(e)}: 完了`);
+        const blobs = await runBoundaryEdgesPipeline(edges, header, lazFile, {
+            transformOpts: SIMA_TRANSFORM_OPTS,
+            zA,
+            zB,
+            useTargetMarker,
+            targetHalf,
+            singleOutput: false,
+            chunkSizeMB,
+            onProgress(percent, msg) {
+                updateProgress(percent, msg);
+                if (msg && msg.startsWith('辺') && msg.includes('点')) addLog(msg);
+            },
+            edgeLabel(e) {
+                return edgeLabel(e);
+            },
+            onBeforeLoadPoints(useStreaming) {
+                addLog(useStreaming ? '非圧縮LASをストリーミングで全点読み込み中...' : 'LASを全点読み込み中...');
+            },
+            onPointsLoaded(n) {
+                addLog(`読込: ${n.toLocaleString()}点`);
             }
-        } else {
-            let points;
-            if (useStreaming) {
-                addLog('非圧縮LASをストリーミングで全点読み込み中...');
-                points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
-            } else {
-                addLog('LASを全点読み込み中...');
-                const arrayBuffer = await lazFile.arrayBuffer();
-                points = readAllPointsFromLASBuffer(arrayBuffer, header);
-            }
-            addLog(`読込: ${points.length.toLocaleString()}点`);
-            for (let e = 0; e < edges.length; e++) {
-                const edge = edges[e];
-                const { xA, yA, axes, clipPolygon } = edge;
-                const { ux, uy, vx, vy } = axes;
-                const filtered = points.filter((p) => pointInPolygon(p.x, p.y, clipPolygon));
-                const { markerPointsA, markerPointsB } = createMarkerPointsForEdge(edge, useTargetMarker, targetHalf, zA, zB);
-                const outPoints = [...filtered, ...markerPointsA, ...markerPointsB];
-                transformPointsBoundary(outPoints, xA, yA, ux, uy, vx, vy, SIMA_TRANSFORM_OPTS);
-                for (const p of outPoints) ensurePointRGB(p);
-                const buf = createLASFile(outPoints, header);
-                blobs.push(new Blob([buf], { type: 'application/octet-stream' }));
-                addLog(`辺${edgeLabel(e)}: ${filtered.length.toLocaleString()}点`);
-            }
-        }
-
+        });
+        blobs.forEach((_, e) => addLog(`辺${edgeLabel(e)}: 完了`));
         updateProgress(100, '完了');
         resultSection.classList.add('active');
         const linksHtml = blobs.map((blob, e) => {
@@ -2461,53 +2483,6 @@ async function processBoundaryPerEdgeFromSim() {
             ${edges.length} 辺のLASファイルを生成しました。<br>
             <div style="margin-top:12px;">${linksHtml}</div>
         `;
-        if (downloadBtn) downloadBtn.style.display = 'none';
-        if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
-        addLog('✅ 完了');
-    } catch (err) {
-        console.error(err);
-        addLog(`❌ エラー: ${err.message}`);
-        alert(`エラー: ${err.message}`);
-    } finally {
-        processBtn.disabled = false;
-    }
-}
-
-/**
- * 範囲クロップポリゴン生成を実行（単独機能）。A・Bと向きから四角形ポリゴン座標を算出し表示する。
- */
-function processBoundaryClipPolygon() {
-    try {
-        const [xA, yA] = surveyToMathPoint(parseFloat(document.getElementById('pointAX').value), parseFloat(document.getElementById('pointAY').value));
-        const [xB, yB] = surveyToMathPoint(parseFloat(document.getElementById('pointBX').value), parseFloat(document.getElementById('pointBY').value));
-        const aLeftBRight = (document.getElementById('boundaryDirection').value === 'aLeftBRight');
-        if ([xA, yA, xB, yB].some(Number.isNaN)) {
-            throw new Error('境界点A・BのXY座標を数値で入力してください。');
-        }
-        const axes = computeBoundaryAxes(xA, yA, xB, yB, aLeftBRight);
-        if (!axes) {
-            throw new Error('点Aと点Bが同一です。異なる2点を指定してください。');
-        }
-        const polygon = getBoundaryClipPolygon(xA, yA, xB, yB, axes);
-
-        processBtn.disabled = true;
-        progressSection.classList.add('active');
-        resultSection.classList.add('active');
-        logDiv.innerHTML = '';
-        addLog('範囲クロップポリゴン生成');
-        addLog(`A=(${xA}, ${yA}), B=(${xB}, ${yB}), 向き: ${aLeftBRight ? 'A→B' : 'B→A'}`);
-        addLog(`余裕: 左右・下 1m, 上 100m`);
-        addLog(`ポリゴン頂点（P0→P1→P2→P3）:`);
-        polygon.forEach((pt, i) => addLog(`  P${i}: ${pt[0]}, ${pt[1]}`));
-
-        const coordsText = polygon.map(pt => `${pt[0]}, ${pt[1]}`).join('\n');
-        resultText.innerHTML = `
-            範囲クロップポリゴン（4頂点）を生成しました。<br>
-            <label style="display:block; margin-top:10px; font-weight:600;">ポリゴン座標（コピー用） [[x,y], ...] 形式:</label>
-            <textarea id="clipPolygonCoordsCopy" readonly rows="6" style="width:100%; margin-top:4px; font-family:monospace; font-size:13px; padding:8px; box-sizing:border-box;"></textarea>
-        `;
-        const ta = document.getElementById('clipPolygonCoordsCopy');
-        if (ta) ta.value = coordsText;
         if (downloadBtn) downloadBtn.style.display = 'none';
         if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
         addLog('✅ 完了');
@@ -2540,7 +2515,6 @@ async function processBoundaryTransform() {
         if (!axes) {
             throw new Error('点Aと点Bが同一です。異なる2点を指定してください。');
         }
-        const { ux, uy, vx, vy } = axes;
 
         processBtn.disabled = true;
         progressSection.classList.add('active');
@@ -2555,94 +2529,54 @@ async function processBoundaryTransform() {
         logAndWarnDistanceToExtent(header, xA, yA, xB, yB);
         updateProgress(10, 'ヘッダー解析完了');
 
-        let points = [];
-        let boundaryOutputBlob = null; // LAZ経路でストリーム出力した場合のBlob
-        const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
-        const SPHERE_RADIUS = 0.01;
-        const SPHERE_POINTS = 50;
+        const edges = buildEdgesFromTwoPoints(xA, yA, xB, yB, aLeftBRight);
         const useTargetMarker = document.querySelector('input[name="boundaryMarker"]:checked')?.value === 'target';
         const targetHalf = (parseFloat(document.getElementById('boundaryTargetSize')?.value) || 0.1);
-        let markerPointsA, markerPointsB;
-        if (useTargetMarker) {
-            markerPointsA = generateCheckerboardTargetFacingProfile(xA, yA, zA, targetHalf, ux, uy, vx, vy);
-            markerPointsB = generateCheckerboardTargetFacingProfile(xB, yB, zB, targetHalf, ux, uy, vx, vy);
-        } else {
-            markerPointsA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
-            markerPointsB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
-        }
+        const { markerPointsA, markerPointsB } = createMarkerPointsForEdge(edges[0], useTargetMarker, targetHalf, zA, zB);
         const markerCount = markerPointsA.length + markerPointsB.length;
+        const { chunkSizeMB } = getStreamingOptions(lazFile);
+        const scaleYInput = parseFloat(document.getElementById('scaleY')?.value);
+        const scaleYVal = (Number.isFinite(scaleYInput) && scaleYInput > 0) ? scaleYInput : 1;
 
-        if (header.isCompressed) {
-            addLog('LAZをストリーミング解凍し、境界基準座標に変換してLASに書き出しています...');
-            const arrayBuffer = await lazFile.arrayBuffer();
-            const extraPoints = [];
-            for (const p of [...markerPointsA, ...markerPointsB]) {
-                const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, {});
-                extraPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
-            }
-            boundaryOutputBlob = await streamLAZToLASBlob(arrayBuffer, header, {
-                onPoint(p, i) {
-                    const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, {});
-                    p.x = t.x;
-                    p.y = t.y;
-                    p.z = t.z;
-                },
-                onProgress(i, pointCount) {
-                    const progress = 25 + (i / pointCount) * 65;
-                    updateProgress(progress, `解凍+変換: ${i.toLocaleString()}/${pointCount.toLocaleString()}点`);
-                    if (i % LOG_UPDATE_INTERVAL === 0 || i === pointCount) {
-                        addLog(`処理: ${i.toLocaleString()}/${pointCount.toLocaleString()}点`);
+        let pointsLoadedCount = 0;
+        if (header.isCompressed) addLog('LAZをストリーミング解凍し、境界基準座標に変換してLASに書き出しています...');
+        const blobs = await runBoundaryEdgesPipeline(edges, header, lazFile, {
+            transformOpts: {},
+            zA,
+            zB,
+            useTargetMarker,
+            targetHalf,
+            singleOutput: true,
+            chunkSizeMB,
+            scaleY: scaleYVal,
+            onProgress(percent, msg) {
+                updateProgress(percent, msg);
+                if (msg && msg.includes('点') && msg.includes('/')) {
+                    if (typeof LOG_UPDATE_INTERVAL !== 'undefined' && msg.includes('解凍')) {
+                        const m = /(\d[\d,]*)\/(\d[\d,]*)点/.exec(msg);
+                        if (m) {
+                            const i = parseInt(m[1].replace(/,/g, ''), 10);
+                            if (i % LOG_UPDATE_INTERVAL === 0 || i === parseInt(m[2].replace(/,/g, ''), 10)) {
+                                addLog(`処理: ${m[0]}`);
+                            }
+                        }
                     }
-                },
-                extraPoints
-            });
-            if (useTargetMarker) {
-                addLog(`白黒ターゲットを追加: A・B各中心（半幅${targetHalf}m・正面向き）、合計+${extraPoints.length}点`);
-            } else {
-                addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、合計+${extraPoints.length}点`);
+                }
+            },
+            onBeforeLoadPoints(useStreaming) {
+                addLog(useStreaming ? '非圧縮LASをストリーミングで全点読み込み中...' : 'LASファイルを読み込んでいます...');
+            },
+            onPointsLoaded(n) {
+                pointsLoadedCount = n;
+                addLog(`読込: ${n.toLocaleString()}点`);
             }
-        } else if (useStreaming) {
-            addLog('非圧縮LASをストリーミングで全点読み込み中...');
-            points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
-            points.push(...markerPointsA, ...markerPointsB);
-            if (useTargetMarker) addLog(`白黒ターゲットを追加: A・B各中心（半幅${targetHalf}m）、座標変換前に追加`);
-            else addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
-            addLog('座標変換を適用しています...');
-            updateProgress(75, '座標変換中');
-            transformPointsBoundary(points, xA, yA, ux, uy, vx, vy, {});
-        } else {
-            addLog('LASファイルを読み込んでいます...');
-            const arrayBuffer = await lazFile.arrayBuffer();
-            updateProgress(20, '読込中');
-            points = readAllPointsFromLASBuffer(arrayBuffer, header);
-            addLog(`読込: ${points.length.toLocaleString()}点`);
-            points.push(...markerPointsA, ...markerPointsB);
-            if (useTargetMarker) addLog(`白黒ターゲットを追加: A・B各中心（半幅${targetHalf}m）、座標変換前に追加`);
-            else addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
-            addLog('座標変換を適用しています...');
-            updateProgress(70, '座標変換中');
-            transformPointsBoundary(points, xA, yA, ux, uy, vx, vy, {});
-        }
+        });
 
-        let blob;
-        let totalPoints;
-        if (boundaryOutputBlob) {
-            updateProgress(95, 'LAS出力完了');
-            blob = boundaryOutputBlob;
-            totalPoints = header.numPoints + markerCount;
-        } else {
-            for (const p of points) ensurePointRGB(p);
-            const scaleYInput = parseFloat(document.getElementById('scaleY')?.value);
-            const scaleYVal = (Number.isFinite(scaleYInput) && scaleYInput > 0) ? scaleYInput : 1;
-            if (scaleYVal !== 1) {
-                scaleYPoints(points, scaleYVal);
-                addLog(`標高の強調適用: ${scaleYVal}倍`);
-            }
-            updateProgress(95, 'LAS出力生成中');
-            const outputLasBuffer = createLASFile(points, header);
-            blob = new Blob([outputLasBuffer], { type: 'application/octet-stream' });
-            totalPoints = points.length;
-        }
+        const blob = blobs[0];
+        const totalPoints = header.isCompressed ? header.numPoints + markerCount : pointsLoadedCount + markerCount;
+        if (scaleYVal !== 1 && !header.isCompressed) addLog(`標高の強調適用: ${scaleYVal}倍`);
+        if (useTargetMarker) addLog(`白黒ターゲットを追加: A・B各中心（半幅${targetHalf}m・正面向き）、合計+${markerCount}点`);
+        else addLog(`スフィア点群を追加: A・B各50点（半径0.01m・マゼンタ）、合計+${markerCount}点`);
         updateProgress(100, '完了');
 
         const url = URL.createObjectURL(blob);
@@ -2681,6 +2615,9 @@ async function processBoundaryTransform() {
  */
 async function processSectionMode() {
     try {
+        if (!lazFile) {
+            throw new Error('LAZ/LASファイルを選択してください。');
+        }
         if (!wasmReady || !LazPerf) {
             throw new Error('LAZ解凍エンジンが初期化されていません。ページをリロードしてください。');
         }

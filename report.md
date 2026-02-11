@@ -75,6 +75,20 @@
 3. **視線方向**: `viewFromInterior=true` で奥行き(yp)を反転し、内側→外側の視線にする。
 4. **90°補正**: `swapBoundaryDepth=true` で境界方向と奥行きを入れ替え、真上から見て左手←右手が視線方向になる。
 
+## 立面図作成（2点） vs 立面図・辺ごと（SIMA）の比較
+
+| 項目 | 立面図作成（境界の内側→外側） | 立面図・辺ごと（SIMA） |
+|------|------------------------------|-------------------------|
+| **入力** | 手入力 A・B 2点（測量座標→surveyToMathPoint） | SIMA ポリゴン（測量→simaToMathPolygon） |
+| **境界の決め方** | 1本の直線 A→B。向きは「A左B右」でユーザー指定 | ポリゴンの各辺。辺ごとに centroid で外側向きを自動反転（dot>0 で AB 反転） |
+| **点の絞り込み** | なし（全点を変換） | あり。各辺で範囲クロップポリゴン内のみ（左右1m・下1m・上100m・外側向き） |
+| **座標変換** | `transformPointBoundary(..., {})` デフォルト | `transformPointBoundary(..., SIMA_TRANSFORM_OPTS)`（swapXZ, viewFromInterior, swapBoundaryDepth） |
+| **出力** | 1 個の LAS（output_boundary.las） | 辺数 N 個の LAS（output_boundary_edge_A.las 等） |
+| **LAZ 経路** | streamLAZToLASBlob 1回（filterPoint なし、onPoint で変換） | 辺ごとに streamLAZToLASBlob を N 回（filterPoint で clipPolygon 内のみ、onPoint で SIMA 変換） |
+| **出力座標の意味** | X=境界方向, Y=標高, Z=奥行。そのまま | 同上だが軸入れ替え・視線・90°補正済み（内側→外側、真上で左手←右手が視線） |
+
+**共通**: どちらも `computeBoundaryAxes` → `transformPointBoundary` で境界基準座標系に変換し、A・B マーカー（スフィア or 白黒ターゲット）を追加して LAS 出力。
+
 ## 処理できる最大サイズ
 
 コード上に「この点数まで」という**ハードな上限は設けていない**。どこまで処理できるかは次の要因で決まる。

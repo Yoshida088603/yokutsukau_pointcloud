@@ -308,18 +308,6 @@
                         ターゲット配置（四隅）
                     </label>
                     <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
-                        <input type="radio" name="processMode" id="processModeClipPolygon" value="clipPolygon">
-                        範囲クロップポリゴン生成（AB・左右1m・下1m・上100m）
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
-                        <input type="radio" name="processMode" id="processModeClipPolygonSim" value="clipPolygonSim">
-                        範囲クロップポリゴン（SIMA全辺）
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
-                        <input type="radio" name="processMode" id="processModeBoundaryPerEdge" value="boundaryPerEdge">
-                        立面図・辺ごと（SIMA）
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
                         <input type="radio" name="processMode" id="processModeCopc" value="copc">
                         3DDB COPC取得（平面直角→検索→LAZ丸ごとDL）
                     </label>
@@ -353,34 +341,62 @@
             </div>
 
             <div id="boundarySection" style="display: none;" class="settings">
-                <h4 style="margin-bottom: 10px;">測量座標系で２点の座標値を入力してください（XYZ座標・Zはマーカー中心に使用）</h4>
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
-                    <div class="setting-item">
-                        <label for="pointAX">点A X (m)</label>
-                        <input type="number" id="pointAX" step="any" placeholder="xA">
-                    </div>
-                    <div class="setting-item">
-                        <label for="pointAY">点A Y (m)</label>
-                        <input type="number" id="pointAY" step="any" placeholder="yA">
-                    </div>
-                    <div class="setting-item">
-                        <label for="pointAZ">点A Z (m)</label>
-                        <input type="number" id="pointAZ" step="any" placeholder="zA（省略可）">
-                    </div>
-                    <div class="setting-item">
-                        <label for="pointBX">点B X (m)</label>
-                        <input type="number" id="pointBX" step="any" placeholder="xB">
-                    </div>
-                    <div class="setting-item">
-                        <label for="pointBY">点B Y (m)</label>
-                        <input type="number" id="pointBY" step="any" placeholder="yB">
-                    </div>
-                    <div class="setting-item">
-                        <label for="pointBZ">点B Z (m)</label>
-                        <input type="number" id="pointBZ" step="any" placeholder="zB（省略可）">
+                <h4 id="boundarySectionTitle" style="margin-bottom: 10px;">立面図作成</h4>
+                <div id="boundaryInputModeWrap" class="setting-item" style="margin-bottom: 12px;">
+                    <label>入力方法</label>
+                    <div style="display: flex; gap: 16px; margin-top: 6px; flex-wrap: wrap;">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                            <input type="radio" name="boundaryInputMode" id="boundaryInputTwoPoint" value="twoPoint">
+                            手入力（2点）
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                            <input type="radio" name="boundaryInputMode" id="boundaryInputSima" value="simaPerEdge" checked>
+                            SIMA（辺ごと）
+                        </label>
                     </div>
                 </div>
-                <div class="setting-item" style="margin-top: 10px;">
+                <div id="boundaryTwoPointOptions">
+                    <p style="margin-bottom: 8px; color: #555;">測量座標系で２点の座標値を入力してください（XYZ座標・Zはマーカー中心に使用）</p>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+                        <div class="setting-item">
+                            <label for="pointAX">点A X (m)</label>
+                            <input type="number" id="pointAX" step="any" placeholder="xA">
+                        </div>
+                        <div class="setting-item">
+                            <label for="pointAY">点A Y (m)</label>
+                            <input type="number" id="pointAY" step="any" placeholder="yA">
+                        </div>
+                        <div class="setting-item">
+                            <label for="pointAZ">点A Z (m)</label>
+                            <input type="number" id="pointAZ" step="any" placeholder="zA（省略可）">
+                        </div>
+                        <div class="setting-item">
+                            <label for="pointBX">点B X (m)</label>
+                            <input type="number" id="pointBX" step="any" placeholder="xB">
+                        </div>
+                        <div class="setting-item">
+                            <label for="pointBY">点B Y (m)</label>
+                            <input type="number" id="pointBY" step="any" placeholder="yB">
+                        </div>
+                        <div class="setting-item">
+                            <label for="pointBZ">点B Z (m)</label>
+                            <input type="number" id="pointBZ" step="any" placeholder="zB（省略可）">
+                        </div>
+                    </div>
+                    <div class="setting-item" style="margin-top: 10px;">
+                        <label for="boundaryDirection">X'軸の向き（どちらを「左」にするか）</label>
+                        <select id="boundaryDirection">
+                            <option value="aLeftBRight">Aを左・Bを右（X'は A→B 方向）</option>
+                            <option value="bLeftARight">Bを左・Aを右（X'は B→A 方向）</option>
+                        </select>
+                    </div>
+                    <div class="setting-item" style="margin-top: 10px;">
+                        <label for="scaleY">標高の強調（倍率）</label>
+                        <input type="number" id="scaleY" value="1" step="any" min="0.001">
+                        <small style="color: #666; font-size: 12px;">縦断図のY（標高）をこの倍率で強調します。1のとき変更なし。</small>
+                    </div>
+                </div>
+                <div class="setting-item" style="margin-top: 14px;">
                     <label>A・Bのマーカー</label>
                     <div style="display: flex; gap: 16px; margin-top: 6px; flex-wrap: wrap;">
                         <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
@@ -397,18 +413,6 @@
                     <label for="boundaryTargetSize">ターゲット半幅 (m)</label>
                     <input type="number" id="boundaryTargetSize" value="0.1" min="0.01" step="any">
                     <small style="color: #666; font-size: 12px;">A・B各点を中心とする正方形の半辺長。0.1 = 一辺20cm。</small>
-                </div>
-                <div class="setting-item" style="margin-top: 10px;">
-                    <label for="boundaryDirection">X'軸の向き（どちらを「左」にするか）</label>
-                    <select id="boundaryDirection">
-                        <option value="aLeftBRight">Aを左・Bを右（X'は A→B 方向）</option>
-                        <option value="bLeftARight">Bを左・Aを右（X'は B→A 方向）</option>
-                    </select>
-                </div>
-                <div class="setting-item" style="margin-top: 10px;">
-                    <label for="scaleY">標高の強調（倍率）</label>
-                    <input type="number" id="scaleY" value="1" step="any" min="0.001">
-                    <small style="color: #666; font-size: 12px;">縦断図のY（標高）をこの倍率で強調します。1のとき変更なし。</small>
                 </div>
             </div>
 
